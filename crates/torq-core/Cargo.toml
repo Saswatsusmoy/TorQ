@@ -30,4 +30,4 @@ regex = "1"
 base64.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-util = { version = "0.7", features = ["io"] }
-torq-sources = { path = "../torq-sources", version = "0.1.1" }
+torq-sources = { path = "../torq-sources", version = "0.1.2" }

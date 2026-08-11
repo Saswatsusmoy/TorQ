@@ -49,7 +49,10 @@ pub async fn check() -> Result<String> {
     }
 }
 
-/// Download and atomically replace the running binary.
+/// Download and atomically replace the running binary. Release assets are
+/// `torq-<target>.tar.gz` (same archives install.sh and Homebrew use), so the
+/// `torq` entry is extracted before the swap — writing the archive raw would
+/// produce a corrupt binary.
 pub async fn update() -> Result<String> {
     let manifest = fetch_manifest().await?;
     if manifest.version == VERSION {
@@ -60,9 +63,7 @@ pub async fn update() -> Result<String> {
         .get(current_target())
         .context("no release binary for this platform")?
         .clone();
-    let exe = std::env::current_exe().context("resolving own binary path")?;
-    let tmp = exe.with_extension("new");
-    let bytes = reqwest::get(&url)
+    let archive = reqwest::get(&url)
         .await
         .context("downloading update")?
         .error_for_status()
@@ -70,7 +71,11 @@ pub async fn update() -> Result<String> {
         .bytes()
         .await
         .context("reading update body")?;
-    std::fs::write(&tmp, &bytes).context("writing update")?;
+    let binary = extract_torq(&archive).with_context(|| format!("extracting update from {url}"))?;
+
+    let exe = std::env::current_exe().context("resolving own binary path")?;
+    let tmp = exe.with_extension("new");
+    std::fs::write(&tmp, &binary).context("writing update")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -78,6 +83,26 @@ pub async fn update() -> Result<String> {
     }
     std::fs::rename(&tmp, &exe).context("swapping binary")?;
     Ok(format!("updated to v{}", manifest.version))
+}
+
+/// Pull the `torq` entry out of a `torq-<target>.tar.gz` archive.
+fn extract_torq(archive: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let gz = flate2::read::GzDecoder::new(archive);
+    let mut tar = tar::Archive::new(gz);
+    for entry in tar.entries().context("reading archive")? {
+        let mut entry = entry.context("reading archive entry")?;
+        if entry
+            .path()
+            .context("reading entry path")?
+            .ends_with("torq")
+        {
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf)?;
+            return Ok(buf);
+        }
+    }
+    anyhow::bail!("archive contains no torq binary")
 }
 
 async fn fetch_manifest() -> Result<Manifest> {
@@ -110,5 +135,43 @@ mod tests {
             "url-b"
         };
         assert_eq!(url, expected);
+    }
+
+    #[test]
+    fn extract_torq_pulls_binary_from_archive() {
+        // Build a real torq-<target>.tar.gz in memory and extract it back.
+        let mut tar_bytes = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tar_bytes, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(5);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "torq", std::io::Cursor::new(b"hello"))
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let extracted = extract_torq(&tar_bytes).unwrap();
+        assert_eq!(extracted, b"hello");
+    }
+
+    #[test]
+    fn extract_torq_rejects_missing_binary() {
+        let mut tar_bytes = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tar_bytes, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "readme.txt", std::io::Cursor::new(b"x"))
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        assert!(extract_torq(&tar_bytes).is_err());
     }
 }
