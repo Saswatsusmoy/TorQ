@@ -1,6 +1,6 @@
 //! Download queue, daemon state, and event broadcast.
 //!
-//! The queue is torlink's model: a fixed number of active slots; torrents
+//! The queue uses a fixed number of active slots; torrents
 //! beyond the cap are engine-paused and auto-promoted as slots free. Status is
 //! derived per torrent: user pause, engine pause (queued), error, completed.
 //! Our own metadata (user_paused, added_at) persists to `queue.json`; the
@@ -24,7 +24,7 @@ use crate::engine::Engine;
 use crate::library::Library;
 use crate::rss::Subscriptions;
 
-/// How many torrents download at once (torlink parity; tunable later).
+/// How many torrents download at once (tunable later).
 pub const DEFAULT_MAX_ACTIVE: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

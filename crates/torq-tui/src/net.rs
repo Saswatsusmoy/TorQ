@@ -41,6 +41,13 @@ impl Client {
     pub fn send(&self, action: Action) {
         let _ = self.tx.send(action);
     }
+
+    /// Test-only handle: wire a client to an app without starting the HTTP
+    /// loop so key handlers can be exercised against captured actions.
+    #[cfg(test)]
+    pub fn for_test(tx: UnboundedSender<Action>) -> Self {
+        Self { tx }
+    }
 }
 
 /// Is the daemon answering /health? Any failure (connection refused, timeout,

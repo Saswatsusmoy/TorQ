@@ -5,16 +5,22 @@ sources from your terminal, add with one keypress, and let a daemon download
 and seed while you do other things. Built in Rust on [librqbit](https://github.com/ikatson/rqbit).
 
 ```
-┌ torq ──────────────────────────────────────────────────────────────┐
-│ torq  search  downloads   http://127.0.0.1:8170                   │
-│ inception                                                          │
-│ type to search, Enter to run (empty = browse latest), d = download │
-│ name                    size     seeds source                     │
-│ Inception (2010) 1080p BrRip x264 - 1.85GB - YIFY   1.9 GB  922   │
-│ Inception 2010 1080p BluRay HEVC x265 5.1 BONE      2.0 GB  377   │
-│ Inception.2010.1080p.BluRay.DDP5.1.x265.10bit       2.9 GB  102   │
-│ …                                                                │
-└───────────────────────────────────────────────────────────────────┘
+          𐓏
+ ▀█▀ █▀█ █▀█ █▀█    torq @ http://127.0.0.1:8170
+  █  █▄█ █▀▄ █▄█▀
+ ──────────────────────────────────────────────────────────────────
+ ▌ All       ╭─ Search ────────────────────────────────────────────╮
+   Games     │ ❯ Search or paste a magnet link…                    │
+   Movies    ╰─────────────────────────────────────────────────────╯
+   TV
+   Anime     ╭─ Results (175) ─────────────────────────────────────╮
+              │ 175 results                                       │
+   Downloads │ Name                       │ Size     │ Seeds│ Lch│ Src│
+   Seeding   ├────────────────────────────┼──────────┼──────┼────┼────┤
+              │ ❯ Inception (2010) 1080p   │ 1.90 GB  │  922 │  5 │YTS │
+              │   Inception 2010 BluRay    │ 2.00 GB  │  377 │  9 │1337│
+              ╰────────────────────────────┴──────────┴──────┴────┴────╯
+ ↑↓←→ Move   ↵ Details   d Download   s Sort   / Search   tab Switch   ? Keys
 ```
 
 ## Quickstart
@@ -38,9 +44,12 @@ Then:
 torq tui      # starts the daemon automatically, opens the TUI
 ```
 
-In the TUI: type a query, Enter to search (empty query = browse latest), `d`
-to add; `1`/`2` switch between search and downloads; `p` pause/resume, `x`
-remove, `?` help, `q` quits the TUI — **the daemon keeps downloading**.
+In the TUI: type a query and Enter to search (empty query = browse latest),
+or `/` to edit a running search; `↵` opens a result's details, `d` adds the
+selected result. The sidebar (tab/`←→` to focus) filters results by category
+and lists Downloads/Seeding with live counts: `p` pause/resume, `x` remove,
+`D` remove and delete files, `s` sort, `?` help, `q` quits the TUI — **the
+daemon keeps downloading**.
 `torq status` and `torq search <query>` work from any shell, no TUI needed.
 
 Already have the repo checked out? `cargo build --release` gives you

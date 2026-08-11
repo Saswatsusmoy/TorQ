@@ -37,6 +37,16 @@ semantic versioning.
   let-chains. No behavioral change.
 - librqbit switched to its `rust-tls` backend — the binary no longer links
   openssl and Linux cross-builds work.
+- TUI redesigned with a pane-based layout, re-themed on the everforest
+  palette (sainnhe/everforest dark): green accent family — selection/pointers
+  green, success/checks aqua, errors red, warnings yellow; wordmark in a
+  cream→green gradient. Layout: sidebar rail (All/Games/Movies/TV/Anime +
+  Downloads/Seeding with counts), rounded panels (`╭─ Title (n) ─╮`),
+  a bordered results table (`│` column dividers; `Seeds`/`Lch`/`Size`/`Src`
+  columns), animated progress bars with sheen, per-source tags, results
+  detail view, sortable columns, contextual footer hints, two-column help
+  card, and a centered splash with an editable search bar. Layout and colors
+  are verified by buffer-exact render tests.
 
 ### Added
 
@@ -51,7 +61,7 @@ semantic versioning.
 ### Added
 
 - Daemon core: librqbit engine session (DHT, trackers, uTP/TCP, persistence,
-  SOCKS5, rate limits), torlink-model download queue (active-slot cap,
+  SOCKS5, rate limits), download queue (active-slot cap,
   auto-promotion, paused/queued/completed/failed statuses), `queue.json`
   persistence.
 - REST API on 127.0.0.1 (bearer token auth): `/health`, `/torrents` (list/add/

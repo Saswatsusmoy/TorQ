@@ -5,9 +5,13 @@
 //! daemon if it is not already running.
 
 pub mod app;
+pub mod format;
+pub mod logo;
 pub mod net;
+pub mod theme;
 pub mod ui;
 
+use std::io::Write;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -36,10 +40,15 @@ pub async fn run(config: &Config) -> Result<()> {
 
     let (client, mut msgs) = Client::spawn(base.clone(), config.auth_token.clone());
     let mut terminal = ratatui::init();
+    // Wordmark in the terminal chrome while the TUI owns the screen.
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("torq"))
+        .context("setting terminal title")?;
+    std::io::stdout().flush().ok();
     let mut app = app::App::new(base);
     let result = (|| -> Result<()> {
         loop {
             terminal.draw(|f| ui::draw(f, &mut app))?;
+            app.tick();
             if crossterm::event::poll(Duration::from_millis(100))?
                 && let crossterm::event::Event::Key(key) = crossterm::event::read()?
                 && app.handle_key(key, &client).is_none()

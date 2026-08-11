@@ -3694,6 +3694,7 @@ dependencies = [
  "torq-core",
  "torq-sources",
  "tracing",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 //! Watch folders: drop a `.torrent` file or a file containing a magnet link
-//! and it starts downloading (torlink's `watch` mode, built into the daemon).
+//! and it starts downloading — the daemon's built-in `watch` mode.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
