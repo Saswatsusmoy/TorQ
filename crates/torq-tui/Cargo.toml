@@ -17,5 +17,5 @@ ratatui = "0.29"
 crossterm = "0.28"
 futures.workspace = true
 bytes = "1"
-torq-core = { path = "../torq-core", version = "0.1.0" }
-torq-sources = { path = "../torq-sources", version = "0.1.0" }
+torq-core = { path = "../torq-core", version = "0.1.1" }
+torq-sources = { path = "../torq-sources", version = "0.1.1" }
