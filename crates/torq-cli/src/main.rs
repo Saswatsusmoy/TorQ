@@ -34,6 +34,31 @@ enum Command {
     Status,
     /// Terminal UI (starts the daemon automatically if needed).
     Tui,
+    /// RSS subscriptions: add feeds with filters, list, remove.
+    Rss {
+        #[command(subcommand)]
+        cmd: RssCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum RssCmd {
+    /// Subscribe to a feed (optionally filtered) and auto-download matches.
+    Add {
+        url: String,
+        #[arg(long)]
+        title_re: Option<String>,
+        #[arg(long)]
+        min_size: Option<u64>,
+        #[arg(long)]
+        max_size: Option<u64>,
+        #[arg(long, default_value_t = 300)]
+        interval: u64,
+    },
+    /// List subscriptions.
+    List,
+    /// Remove a subscription by id.
+    Remove { id: u64 },
 }
 
 #[tokio::main]
@@ -47,7 +72,69 @@ async fn main() -> anyhow::Result<()> {
             let config = Config::load()?;
             torq_tui::run(&config).await
         }
+        Command::Rss { cmd } => run_rss(cmd).await,
     }
+}
+
+async fn run_rss(cmd: RssCmd) -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", config.api_port);
+    let auth = |r: reqwest::RequestBuilder| r.bearer_auth(&config.auth_token);
+    match cmd {
+        RssCmd::Add {
+            url,
+            title_re,
+            min_size,
+            max_size,
+            interval,
+        } => {
+            let sub: serde_json::Value =
+                auth(client.post(format!("{base}/rss")).json(&serde_json::json!({
+                    "url": url, "title_re": title_re, "min_size": min_size,
+                    "max_size": max_size, "interval_secs": interval,
+                })))
+                .send()
+                .await
+                .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+                .error_for_status()?
+                .json()
+                .await?;
+            println!("subscribed: {sub}");
+        }
+        RssCmd::List => {
+            let subs: Vec<torq_core::rss::Subscription> = auth(client.get(format!("{base}/rss")))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            for s in &subs {
+                println!(
+                    "[{}] every {}s  {}  (filter: {})",
+                    s.id,
+                    s.interval_secs,
+                    s.url,
+                    s.title_re.as_deref().unwrap_or("-")
+                );
+            }
+            if subs.is_empty() {
+                println!("no subscriptions");
+            }
+        }
+        RssCmd::Remove { id } => {
+            let status = auth(client.delete(format!("{base}/rss/{id}")))
+                .send()
+                .await?
+                .status();
+            if status.is_success() {
+                println!("removed subscription {id}");
+            } else {
+                anyhow::bail!("remove failed: HTTP {status}");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run_daemon() -> anyhow::Result<()> {

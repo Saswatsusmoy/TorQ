@@ -24,3 +24,7 @@ semantic versioning. Unreleased work lives under [Unreleased].
   site is config, not code.
 - `torq search <query>` CLI verb; 8s per-host failover so dead mirrors cost
   seconds, not minutes.
+- RSS subscriptions: `GET/POST/DELETE /rss` + `torq rss` verbs — feed URL,
+  title-regex and size-window filters, jittered polling, auto-download of
+  matches with per-subscription dedupe (works on Nyaa-style namespaced feeds
+  via generic infohash extension fallback).

@@ -3,13 +3,12 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use serde::Deserialize;
 
 use crate::types::{Source, SourceGroup, TorrentResult};
 use crate::util::{build_magnet, canonicalize_hash, fetch_with_failover, parse_size};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RssDef {
     pub id: String,
@@ -101,15 +100,31 @@ impl Source for RssSource {
         };
 
         let xml = fetch_with_failover(client, &def.hosts, &path).await?;
-        let channel = rss::Channel::read_from(xml.as_bytes()).context("parsing RSS")?;
+        Ok(self.parse(&xml))
+    }
+}
+
+impl RssSource {
+    /// Parse a feed body into results. Public so RSS subscriptions reuse the
+    /// exact same item handling (magnets from link/description/content,
+    /// namespaced infohash extensions, size/seed fields).
+    pub fn parse(&self, xml: &str) -> Vec<TorrentResult> {
+        let def = &self.def;
+        let Ok(channel) = rss::Channel::read_from(xml.as_bytes()) else {
+            return Vec::new();
+        };
         let mut out = Vec::with_capacity(channel.items().len());
         for item in channel.items() {
-            // Magnet first: from the item link, else from its description HTML
-            // (WordPress feeds embed magnets there).
+            // Magnet first: from the item link, else from its description or
+            // content HTML (WordPress feeds embed magnets there).
             let magnet = magnet_from(item);
             let hash = match &def.hash_field {
                 Some(f) => extension(item, f),
-                None => magnet.as_deref().and_then(extract_hash).map(str::to_string),
+                None => magnet
+                    .as_deref()
+                    .and_then(extract_hash)
+                    .map(str::to_string)
+                    .or_else(|| extension_hash(item)),
             };
             let Some(hash) = hash.and_then(|h| canonicalize_hash(&h)) else {
                 continue;
@@ -143,8 +158,19 @@ impl Source for RssSource {
                 added: None,
             });
         }
-        Ok(out)
+        out
     }
+}
+
+/// Any namespaced extension whose value canonicalizes to an infohash
+/// (e.g. `nyaa:infoHash`) — lets generic subscriptions work on Nyaa-style
+/// feeds without a per-feed config.
+fn extension_hash(item: &rss::Item) -> Option<String> {
+    item.extensions()
+        .values()
+        .flat_map(|ns| ns.values())
+        .flatten()
+        .find_map(|e| e.value().and_then(canonicalize_hash))
 }
 
 /// The item's magnet: from its `<link>` if that is a magnet, else the first

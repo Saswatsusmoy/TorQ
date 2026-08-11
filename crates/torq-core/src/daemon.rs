@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::engine::Engine;
+use crate::rss::Subscriptions;
 
 /// How many torrents download at once (torlink parity; tunable later).
 pub const DEFAULT_MAX_ACTIVE: usize = 3;
@@ -92,19 +93,23 @@ pub struct Daemon {
     state_dir: PathBuf,
     meta: Mutex<HashMap<String, Meta>>,
     events: broadcast::Sender<Event>,
+    /// RSS subscriptions; polled by a background task.
+    pub rss: Arc<Subscriptions>,
 }
 
 impl Daemon {
     /// Start the daemon: hydrate metadata for restored torrents, promote any
-    /// queued into free slots, and spawn the transition tick.
+    /// queued into free slots, and spawn the transition + RSS poll ticks.
     pub async fn start(config: &Config, engine: Arc<Engine>) -> Result<Arc<Self>> {
         let (events, _) = broadcast::channel(512);
+        let rss = Subscriptions::load(config.state_dir.join("subscriptions.json"));
         let daemon = Arc::new(Self {
             engine,
             max_active: DEFAULT_MAX_ACTIVE,
             state_dir: config.state_dir.clone(),
             meta: Mutex::new(HashMap::new()),
             events,
+            rss,
         });
 
         daemon.load_meta();
@@ -123,6 +128,7 @@ impl Daemon {
         daemon.try_promote().await;
 
         tokio::spawn(tick_loop(daemon.clone()));
+        tokio::spawn(rss_poll_loop(daemon.clone(), config.socks_proxy.clone()));
         Ok(daemon)
     }
 
@@ -413,6 +419,19 @@ async fn tick_loop(daemon: Arc<Daemon>) {
     loop {
         interval.tick().await;
         daemon.reconcile().await;
+    }
+}
+
+/// Poll due RSS subscriptions every 30s; each subscription staggers itself.
+async fn rss_poll_loop(daemon: Arc<Daemon>, socks_proxy: Option<String>) {
+    let Ok(client) = torq_sources::types::http_client(socks_proxy.as_deref()) else {
+        warn!("rss polling disabled: no HTTP client");
+        return;
+    };
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+        daemon.rss.poll_due(&client, &daemon).await;
     }
 }
 

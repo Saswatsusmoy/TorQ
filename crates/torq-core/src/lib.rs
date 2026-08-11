@@ -7,6 +7,7 @@ pub mod api;
 pub mod config;
 pub mod daemon;
 pub mod engine;
+pub mod rss;
 pub mod watch;
 
 pub const APP_NAME: &str = "torq";

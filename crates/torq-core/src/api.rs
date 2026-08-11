@@ -50,6 +50,8 @@ pub fn router(
         .route("/torrents/{id}/pause", post(pause_torrent))
         .route("/torrents/{id}/resume", post(resume_torrent))
         .route("/search", get(search))
+        .route("/rss", get(list_rss).post(add_rss))
+        .route("/rss/{id}", delete(remove_rss))
         .route("/events", get(events))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -192,6 +194,52 @@ async fn resume_torrent(
 ) -> Result<StatusCode, ApiError> {
     state.daemon.resume(TorrentIdOrHash::parse(&id)?).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_rss(State(state): State<Arc<AppState>>) -> Json<Vec<crate::rss::Subscription>> {
+    Json(state.daemon.rss.list())
+}
+
+#[derive(Deserialize)]
+struct AddRssReq {
+    url: String,
+    #[serde(default)]
+    title_re: Option<String>,
+    #[serde(default)]
+    min_size: Option<u64>,
+    #[serde(default)]
+    max_size: Option<u64>,
+    #[serde(default = "default_sub_interval")]
+    interval_secs: u64,
+}
+
+fn default_sub_interval() -> u64 {
+    300
+}
+
+async fn add_rss(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddRssReq>,
+) -> Result<Json<crate::rss::Subscription>, ApiError> {
+    let sub = state.daemon.rss.add(
+        &req.url,
+        req.title_re,
+        req.min_size,
+        req.max_size,
+        req.interval_secs,
+    )?;
+    Ok(Json(sub))
+}
+
+async fn remove_rss(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u64>,
+) -> Result<StatusCode, ApiError> {
+    if state.daemon.rss.remove(id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound(format!("subscription {id} not found")))
+    }
 }
 
 async fn events(

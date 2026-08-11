@@ -23,4 +23,5 @@ tokio-stream.workspace = true
 notify.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true
+regex = "1"
 torq-sources = { path = "../torq-sources" }
