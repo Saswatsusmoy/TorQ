@@ -54,6 +54,19 @@ pub struct TorrentView {
     pub added_at: i64,
 }
 
+impl TorrentView {
+    /// Lowercase human status ("downloading", "seeding", …).
+    pub fn status_label(&self) -> &'static str {
+        match self.status {
+            Status::Downloading => "downloading",
+            Status::Queued => "queued",
+            Status::Paused => "paused",
+            Status::Completed => "seeding",
+            Status::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
@@ -429,10 +442,9 @@ impl Daemon {
                     stats.state,
                     TorrentStatsState::Paused | TorrentStatsState::Error
                 )
+                && let Err(e) = self.engine.pause(TorrentIdOrHash::Id(id)).await
             {
-                if let Err(e) = self.engine.pause(TorrentIdOrHash::Id(id)).await {
-                    debug!(id, "deferred pause not yet possible: {e}");
-                }
+                debug!(id, "deferred pause not yet possible: {e}");
             }
         }
 

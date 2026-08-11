@@ -64,10 +64,10 @@ fn walk(index: &mut HashMap<String, LibraryEntry>, dir: &Path) -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             walk(index, &path)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("torrent") {
-            if let Err(e) = index_torrent(index, &path) {
-                debug!(path = %path.display(), "skipping torrent: {e:#}");
-            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("torrent")
+            && let Err(e) = index_torrent(index, &path)
+        {
+            debug!(path = %path.display(), "skipping torrent: {e:#}");
         }
     }
     Ok(())

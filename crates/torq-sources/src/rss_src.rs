@@ -245,8 +245,11 @@ mod tests {
         let channel = rss::Channel::read_from(xml.as_bytes()).unwrap();
         let item = &channel.items()[0];
         let magnet = magnet_from(item).unwrap();
-        assert!(magnet
-            .starts_with("magnet:?xt=urn:btih:CAB507494D02EBB1178B38F2E9D7BE299C86B862&dn=game"));
+        assert!(
+            magnet.starts_with(
+                "magnet:?xt=urn:btih:CAB507494D02EBB1178B38F2E9D7BE299C86B862&dn=game"
+            )
+        );
         assert_eq!(
             canonicalize_hash(extract_hash(&magnet).unwrap()).unwrap(),
             "cab507494d02ebb1178b38f2e9d7be299c86b862"

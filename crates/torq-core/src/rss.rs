@@ -189,20 +189,20 @@ impl Subscriptions {
 /// Filter rules: optional title regex, optional size window. Items with
 /// unknown size (0) fail any size rule — they cannot be verified.
 fn matches_filters(re: Option<&Regex>, sub: &Subscription, item: &TorrentResult) -> bool {
-    if let Some(re) = re {
-        if !re.is_match(&item.name) {
-            return false;
-        }
+    if let Some(re) = re
+        && !re.is_match(&item.name)
+    {
+        return false;
     }
-    if let Some(min) = sub.min_size {
-        if item.size_bytes == 0 || item.size_bytes < min {
-            return false;
-        }
+    if let Some(min) = sub.min_size
+        && (item.size_bytes == 0 || item.size_bytes < min)
+    {
+        return false;
     }
-    if let Some(max) = sub.max_size {
-        if item.size_bytes == 0 || item.size_bytes > max {
-            return false;
-        }
+    if let Some(max) = sub.max_size
+        && (item.size_bytes == 0 || item.size_bytes > max)
+    {
+        return false;
     }
     true
 }
@@ -314,9 +314,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("torq-rss-test2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let subs = Subscriptions::load(dir.join("subs.json"));
-        assert!(subs
-            .add("https://nyaa.si", Some("([".into()), None, None, 60)
-            .is_err());
+        assert!(
+            subs.add("https://nyaa.si", Some("([".into()), None, None, 60)
+                .is_err()
+        );
         assert!(subs.add("not a url", None, None, None, 60).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }

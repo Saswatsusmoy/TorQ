@@ -10,7 +10,7 @@ use torq_core::api;
 use torq_core::config::Config;
 use torq_core::daemon::{Daemon, TorrentView};
 use torq_core::engine::Engine;
-use torq_core::{watch, VERSION};
+use torq_core::{VERSION, watch};
 
 mod update;
 
@@ -43,6 +43,8 @@ enum Command {
     },
     /// Search all sources for a query (daemon must be running).
     Search { query: String },
+    /// Add a magnet, infohash, or .torrent file to the daemon.
+    Add { magnet: String },
     /// Show daemon health and download status.
     Status,
     /// Terminal UI (starts the daemon automatically if needed).
@@ -114,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Search { query } => run_search(&query).await,
+        Command::Add { magnet } => run_add(&magnet).await,
         Command::Status => run_status().await,
         Command::Tui => {
             let config = Config::load()?;
@@ -411,6 +414,35 @@ async fn run_status() -> anyhow::Result<()> {
             v.name
         );
     }
+    Ok(())
+}
+
+/// Add a magnet, bare infohash, or path to a .torrent file.
+async fn run_add(arg: &str) -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", config.api_port);
+    let mut body = serde_json::json!({"magnet": arg, "paused": false});
+    if std::path::Path::new(arg).is_file() {
+        let bytes = std::fs::read(arg)?;
+        body = serde_json::json!({"torrent_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)});
+    }
+    let view: torq_core::daemon::TorrentView = client
+        .post(format!("{base}/torrents"))
+        .bearer_auth(&config.auth_token)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+        .error_for_status()?
+        .json()
+        .await?;
+    println!(
+        "added [{}] {} ({:.1}%)",
+        view.status_label(),
+        view.name,
+        view.progress * 100.0
+    );
     Ok(())
 }
 

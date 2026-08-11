@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
 use tracing::{info, warn};
 
 use crate::daemon::Daemon;
@@ -51,10 +51,11 @@ fn spawn_watcher(daemon: Arc<Daemon>, dir: PathBuf) -> Result<()> {
         });
         let mut last: Option<(PathBuf, Instant)> = None;
         while let Some(path) = trx.recv().await {
-            if let Some((prev, at)) = &last {
-                if prev == &path && at.elapsed() < DEBOUNCE {
-                    continue;
-                }
+            if let Some((prev, at)) = &last
+                && prev == &path
+                && at.elapsed() < DEBOUNCE
+            {
+                continue;
             }
             last = Some((path.clone(), Instant::now()));
             if let Err(e) = ingest(daemon.clone(), &path).await {

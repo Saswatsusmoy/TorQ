@@ -3525,6 +3525,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "dirs",
  "futures",
@@ -3591,6 +3592,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "clap",
  "dirs",
  "reqwest",

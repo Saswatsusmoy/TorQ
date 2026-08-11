@@ -38,13 +38,13 @@ Then:
 torq tui      # starts the daemon automatically, opens the TUI
 ```
 
+In the TUI: type a query, Enter to search (empty query = browse latest), `d`
+to add; `1`/`2` switch between search and downloads; `p` pause/resume, `x`
+remove, `?` help, `q` quits the TUI — **the daemon keeps downloading**.
+`torq status` and `torq search <query>` work from any shell, no TUI needed.
+
 Already have the repo checked out? `cargo build --release` gives you
 `target/release/torq` directly.
-
-- Type a query, Enter to search (empty query = browse latest), `d` to add.
-- `1`/`2` switch between search and downloads; `p` pause/resume, `x` remove,
-  `?` help, `q` quits the TUI — **the daemon keeps downloading**.
-- `torq status` and `torq search <query>` work from any shell.
 
 ## Architecture
 
@@ -66,8 +66,8 @@ scripts ──┘                                              └─ librqbit s
 | `torq daemon` | Run the engine + API in the foreground |
 | `torq daemon --install` | Install as a login service (launchd / systemd user unit) |
 | `torq search <query>` | Aggregate search across all sources, deduped |
+| `torq add <magnet\|infohash\|file.torrent>` | Add a download to the daemon |
 | `torq status` | Downloads with progress/speed |
-| `torq add` | (via `d` in the TUI or `POST /torrents`) |
 | `torq stream <id>` / `torq play <id>` | Print / open the stream URL (works mid-download) |
 | `torq rss add <url> [--title-re …] [--min-size …] [--interval …]` | Subscribe; matches auto-download |
 | `torq rss list` / `torq rss remove <id>` | Manage subscriptions |

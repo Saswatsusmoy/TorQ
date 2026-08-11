@@ -75,7 +75,7 @@ pub async fn fetch_with_failover(
         let req = client.get(&url).timeout(std::time::Duration::from_secs(8));
         match req.send().await {
             Ok(resp) if resp.status().is_success() => {
-                return resp.text().await.context("reading response body")
+                return resp.text().await.context("reading response body");
             }
             Ok(resp) => last = Some(anyhow::anyhow!("{url}: HTTP {}", resp.status())),
             Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),

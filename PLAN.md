@@ -1,5 +1,11 @@
 # TorQ — plan
 
+> Status: **all phases shipped in v0.1.0** (daemon core, sources, TUI, RSS,
+> streaming, controls, cross-seed, packaging). This is the design record;
+> the implemented surface is in [README.md](README.md). Distribution:
+> crates.io (`torqtui`), GitHub Releases + `torq update` manifest, Homebrew
+> tap (`saswatsusmoy/torq`), `install.sh`. Releases are manual (no CI).
+
 A torlink alternative: terminal + API torrent finder/downloader, rebuilt in Rust for
 performance and resource efficiency, with a daemon/client architecture and a feature
 set beyond what torlink ships.
@@ -11,21 +17,23 @@ WebTorrent (JS engine, memory-hungry, single-threaded), TUI-or-headless modes wi
 tmux hack for reattach, 10 hardcoded scrapers, no RSS subscriptions, no proxy, no
 streaming, no per-torrent controls.
 
-TorQ: one ~10MB static binary, zero runtime deps, a long-lived daemon owning the
+TorQ: one ~11MB binary, zero runtime deps, a long-lived daemon owning the
 engine with thin stateless clients (TUI, CLI, REST), and every feature below built
 into the daemon.
 
 ## Stack (decided)
 
-- **Rust** (edition 2021+, rustc 1.91) — single static binary, no GC, mmap-able disk I/O
-- **librqbit 8.1.1** (crates.io stable) — pure-Rust BitTorrent engine: DHT, trackers,
-  uTP, TCP, WebSeed, PEX, LSD, SOCKS5 proxy, per-torrent + session rate limits,
-  sequential streaming with HTTP range, JSON session persistence, file selection
+- **Rust** (edition 2024, rustc 1.91, MSRV 1.85) — single static binary, no GC, mmap-able disk I/O
+- **librqbit 8.1.1** (crates.io stable, `rust-tls` feature — no openssl) — pure-Rust
+  BitTorrent engine: DHT, trackers, uTP, TCP, WebSeed, PEX, LSD, SOCKS5 proxy,
+  per-torrent + session rate limits, sequential streaming with HTTP range, JSON
+  session persistence, file selection
 - **axum** — REST + SSE API on 127.0.0.1 with token auth
 - **ratatui + crossterm** — TUI client
 - **reqwest (rustls, socks)** — HTTP for sources, trackers, and proxy support
 - **scraper** — HTML extraction for the sites that need it (1337x)
-- **rusqlite** — library index for dedupe/cross-seed
+- Library/cross-seed index: in-memory infohash map built by scanning `.torrent`
+  dirs (librqbit-core parse), rebuilt on demand — deliberately no SQLite
 
 ## Architecture
 
@@ -52,30 +60,31 @@ graph TD
 ```
 
 - No tmux hack: daemon owns the engine; reattach = reconnect. Multiple TUIs attach.
-- Crates: `torq-core` (daemon: engine wrapper, queue, persistence, API), `torq-sources`
-  (adapters + plugin engine), `torq-tui` (ratatui), `torq-cli` (binary: subcommands).
+- Crates: `torq-core` (daemon: engine wrapper, queue, persistence, API),
+  `torq-sources` (adapters + plugin engine), `torq-tui` (ratatui), `torqtui`
+  (binary crate; the `torq` name was taken on crates.io, the command stays `torq`).
 - Config: `config.toml` (download dir, trackers, limits, proxy, auth token, plugins).
-  State: librqbit JSON persistence (session + have-bitfields) + `library.sqlite3`.
-- Plugins: TOML manifests — "RSS feed + item mapping" or "search URL template + CSS
-  selectors". No scripting runtime, no headless browser. Built-ins: the 10 torlink
+  State: librqbit JSON persistence (session + have-bitfields); queue/subscriptions
+  metadata in JSON; the cross-seed index is rebuilt by scanning on demand.
+- Plugins: TOML manifests — "RSS feed + item mapping" or "JSON-API endpoint + field
+  map". No scripting runtime, no headless browser. Built-ins: the 10 torlink
   sources ported to Rust.
 
-## API surface (v1)
+## API surface (v1, implemented)
 
 ```
 GET  /health                          daemon alive + version
-GET  /events                          SSE stream of queue/torrent/search events
+GET  /events                          SSE stream of queue/torrent events
 GET  /torrents                        list + status
-POST /torrents                        add (magnet / infohash / .torrent / URL)
-POST /torrents/{id}/pause|resume|remove
+POST /torrents                        add (magnet / infohash / torrent_b64)
+DELETE /torrents/{id}                 remove (?delete_files=1)
+POST /torrents/{id}/pause|resume
 GET  /torrents/{id}/files
-POST /torrents/{id}/files             select files (only_files)
 GET  /torrents/{id}/stream/{file}     range HTTP (in-progress OK, sequential)
 GET  /search?q=&sources=...           aggregated, deduped by infohash
-POST /rss                             add subscription (URL + filters)
-GET  /library                         cross-seed index stats
-POST /library/scan                    rescan library dir
-GET  /config ; PATCH /config          limits, proxy, scheduler
+GET/POST/DELETE /rss                  subscriptions (filters, autodownload)
+GET/POST /library                     cross-seed index (scan on demand)
+PATCH /config/limits                  live rate limits
 ```
 
 Auth: bearer token generated on first daemon start, stored in config; TUI/CLI read it
@@ -93,30 +102,28 @@ from the config file (local trust). All binds on 127.0.0.1.
 | Active downloads | 3–5 default slots, rest queued (torlink model) |
 | Disk I/O | sync pwritev (librqbit default), zero-copy; mmap optional |
 
-## Build order
+## Build order (all shipped in v0.1.0)
 
 1. ~~Spike~~ — done, see [docs/SPIKE.md](docs/SPIKE.md)
-2. **Daemon core**: engine session, add/remove, queue slots, persistence, REST+SSE,
+2. ~~Daemon core~~: engine session, add/remove, queue slots, persistence, REST+SSE,
    token auth, watch-folder (notify). torlink's `watch`/`serve` folds in here.
-3. **Sources**: port 10 adapters, plugin manifests, aggregated search + infohash dedupe
-   + cache.
-4. **TUI**: torlink-parity panes (browse/search/downloads/seeding), keymap,
-   attach/detach over REST.
-5. **RSS + autodownload**: subscriptions, regex/size/quality filters, jittered polling.
-6. **Streaming**: sequential download, range HTTP, `torq play <id>` → mpv/`open`.
-7. **Resource controls + proxy**: caps (librqbit ratelimits), bandwidth scheduler,
-   SOCKS5 for HTTP + peers (librqbit `ConnectionOptions.proxy_url`).
-8. **Cross-seed**: library index, scan, infohash+size match, hardlink mode.
-9. **Packaging**: release builds, self-update (manifest + atomic swap), launchd agent,
-   previews, README.
+3. ~~Sources~~: port 10 adapters, plugin manifests, aggregated search + infohash dedupe.
+4. ~~TUI~~: torlink-parity panes (browse/search/downloads), keymap, attach/detach.
+5. ~~RSS + autodownload~~: subscriptions, regex/size filters, jittered polling.
+6. ~~Streaming~~: sequential download (FileStream), range HTTP, `torq play`.
+7. ~~Resource controls + proxy~~: caps (librqbit ratelimits), bandwidth scheduler,
+   SOCKS5 (librqbit `socks_proxy_url` + reqwest proxy for HTTP).
+8. ~~Cross-seed~~: library scan, infohash match, output routing to existing data.
+9. ~~Packaging~~: release builds, self-update (manifest + atomic swap), launchd agent,
+   README, install.sh, Homebrew tap, crates.io publish.
 
 ## Testing
 
-- Unit tests per crate (cargo nextest): queue state machine, persistence round-trips,
-  dedupe, filter matching, RSS parsing, config.
-- Integration: daemon tests against a local tracker/peer (rqbit's e2e harness pattern);
-  full E2E: add magnet → download → verify file → seed → remove.
-- Property-style tests for piece/file math where it matters.
+- Unit tests per crate (cargo test): queue state machine, persistence round-trips,
+  dedupe, filter matching, RSS parsing, config, schedule windows, library scan.
+- E2E per phase against the real daemon and live network (documented in commit
+  messages): add → download → stream ranges → pause → remove; RSS autodownload;
+  cross-seed routing; installer + self-update against real releases.
 
 ## Risks (spike-resolved)
 

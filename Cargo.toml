@@ -4,9 +4,10 @@ members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/Saswatsusmoy/TorQ"
+rust-version = "1.85"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -27,6 +28,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 notify = "6"
 parking_lot = "0.12"
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"

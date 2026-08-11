@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -23,8 +23,8 @@ use tokio::io::AsyncReadExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::io::ReaderStream;
 
-use crate::daemon::{Daemon, Event, TorrentView};
 use crate::VERSION;
+use crate::daemon::{Daemon, Event, TorrentView};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -279,16 +279,34 @@ async fn search(
 
 #[derive(Deserialize)]
 struct AddReq {
+    #[serde(default)]
     magnet: String,
     #[serde(default)]
     paused: bool,
+    /// Base64-encoded .torrent bytes (mutually exclusive with magnet).
+    #[serde(default)]
+    torrent_b64: Option<String>,
 }
 
 async fn add_torrent(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddReq>,
 ) -> Result<Json<TorrentView>, ApiError> {
-    let view = state.daemon.add_magnet(&req.magnet, req.paused).await?;
+    let view = match req.torrent_b64 {
+        Some(b64) => {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .map_err(|e| ApiError::BadRequest(format!("invalid torrent_b64: {e}")))?;
+            state.daemon.add_torrent_bytes(bytes, req.paused).await?
+        }
+        None if req.magnet.trim().is_empty() => {
+            return Err(ApiError::BadRequest(
+                "provide a magnet or torrent_b64".into(),
+            ));
+        }
+        None => state.daemon.add_magnet(&req.magnet, req.paused).await?,
+    };
     Ok(Json(view))
 }
 

@@ -40,12 +40,11 @@ pub async fn run(config: &Config) -> Result<()> {
     let result = (|| -> Result<()> {
         loop {
             terminal.draw(|f| ui::draw(f, &mut app))?;
-            if crossterm::event::poll(Duration::from_millis(100))? {
-                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                    if app.handle_key(key, &client).is_none() {
-                        break; // quit
-                    }
-                }
+            if crossterm::event::poll(Duration::from_millis(100))?
+                && let crossterm::event::Event::Key(key) = crossterm::event::read()?
+                && app.handle_key(key, &client).is_none()
+            {
+                break; // quit
             }
             while let Ok(msg) = msgs.try_recv() {
                 app.apply(msg);

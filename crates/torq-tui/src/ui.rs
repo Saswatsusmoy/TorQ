@@ -1,10 +1,10 @@
 //! Rendering: header tabs, search/results, downloads, help overlay.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
-use ratatui::Frame;
 
 use crate::app::{App, Tab};
 

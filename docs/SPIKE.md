@@ -99,4 +99,9 @@ The cloned HEAD is 9.0.0-rc.0; crates.io stable is 8.1.1. Verified against the
   long-running sync work; our daemon's `views()` must never hold our meta lock
   while calling it (we deadlocked on that — fixed by computing queue decisions
   before taking the meta guard).
+- **TLS backend**: librqbit's default features pull `reqwest/default-tls`
+  (native-tls → openssl-sys), which breaks Linux cross-compilation. Use
+  `default-features = false, features = ["rust-tls"]` (rustls + ring) — also
+  drop the `librqbit-core` default `sha1-crypto-hash` in favor of
+  `sha1-ring` so the two don't conflict.
 

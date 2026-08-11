@@ -12,12 +12,15 @@ reviewable code — no ceremony, no speculative abstraction.
 
 ## Code
 
+- Rust edition 2024, MSRV 1.85 (`rust-version` in the workspace manifest).
 - `cargo fmt` and `cargo clippy --workspace --all-targets -- -D warnings`
   must pass before any merge.
 - Prefer fewer, denser lines over ceremony: no filler doc comments, no
   needless generics, no wrappers that don't earn their lines.
 - Reuse what exists: librqbit's `Api` facade, shared runners for
   declarative sources — do not hand-roll a second convention.
+- No new dependencies without a reason; prefer audited crates over
+  hand-rolled crypto/encoding (e.g. `base64` over a local encoder).
 
 ## Tests
 

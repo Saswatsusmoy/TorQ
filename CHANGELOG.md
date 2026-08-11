@@ -1,9 +1,26 @@
 # Changelog
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
-semantic versioning. Unreleased work lives under [Unreleased].
+semantic versioning.
 
 ## [Unreleased]
+
+### Changed
+
+- Rust edition 2021 → 2024 (MSRV 1.85); nested `if let`s collapsed to
+  let-chains. No behavioral change.
+- librqbit switched to its `rust-tls` backend — the binary no longer links
+  openssl and Linux cross-builds work.
+
+### Added
+
+- `torq add <magnet|infohash|file.torrent>` CLI verb; `POST /torrents`
+  accepts `torrent_b64` (base64 `.torrent` bytes) in addition to magnets.
+- Distribution: crates.io publish (`torqtui` — the `torq` name is taken),
+  GitHub Releases with per-platform binaries + update manifest, Homebrew tap
+  (`saswatsusmoy/torq`), `install.sh`.
+
+## [0.1.0] — 2026-08-11
 
 ### Added
 
@@ -38,5 +55,5 @@ semantic versioning. Unreleased work lives under [Unreleased].
   re-adding a matching hash points the engine at the existing data.
 - Bound magnet metadata resolution at 30s so seedless magnets error instead
   of hanging the API.
-- Packaging: 11MB release binary, `torq daemon --install` (launchd /
-  systemd), `torq update` manifest-based self-update, README.
+- Packaging: release binary, `torq daemon --install` (launchd / systemd),
+  `torq update` manifest-based self-update, README.
