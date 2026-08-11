@@ -94,9 +94,6 @@ hosts = ["https://mysite.example"]
 path = "/feed"
 ```
 
-See `docs/PLAN.md` for the full design and `docs/SPIKE.md` for the librqbit
-capability report.
-
 ## Config
 
 `~/.config/torq/config.toml` (macOS: `~/Library/Application Support/torq/`):
