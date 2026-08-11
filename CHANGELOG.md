@@ -28,3 +28,15 @@ semantic versioning. Unreleased work lives under [Unreleased].
   title-regex and size-window filters, jittered polling, auto-download of
   matches with per-subscription dedupe (works on Nyaa-style namespaced feeds
   via generic infohash extension fallback).
+- Streaming: `GET /torrents/{id}/stream/{file}` with HTTP ranges over
+  librqbit's on-demand FileStream (playback starts mid-download); `torq
+  play` / `torq stream`.
+- Resource controls: live rate limits (`PATCH /config/limits`, `torq
+  limits`), time-of-day bandwidth schedule in config, SOCKS5 proxy (peers +
+  sources) via config.
+- Cross-seed: library index of existing `.torrent` dirs (`torq library`),
+  re-adding a matching hash points the engine at the existing data.
+- Bound magnet metadata resolution at 30s so seedless magnets error instead
+  of hanging the API.
+- Packaging: 11MB release binary, `torq daemon --install` (launchd /
+  systemd), `torq update` manifest-based self-update, README.

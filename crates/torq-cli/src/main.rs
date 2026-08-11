@@ -12,6 +12,8 @@ use torq_core::daemon::{Daemon, TorrentView};
 use torq_core::engine::Engine;
 use torq_core::{watch, VERSION};
 
+mod update;
+
 #[derive(Parser)]
 #[command(
     name = "torq",
@@ -27,7 +29,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the background daemon that owns the torrent engine.
-    Daemon,
+    Daemon {
+        /// Install the daemon as a login service (launchd / systemd user unit)
+        /// and start it, then exit.
+        #[arg(long)]
+        install: bool,
+    },
+    /// Check for a newer release and update the binary.
+    Update {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+    },
     /// Search all sources for a query (daemon must be running).
     Search { query: String },
     /// Show daemon health and download status.
@@ -89,7 +102,17 @@ enum RssCmd {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Daemon => run_daemon().await,
+        Command::Daemon { install: true } => install_daemon(),
+        Command::Daemon { install: false } => run_daemon().await,
+        Command::Update { check } => {
+            let out = if check {
+                update::check().await?
+            } else {
+                update::update().await?
+            };
+            println!("{out}");
+            Ok(())
+        }
         Command::Search { query } => run_search(&query).await,
         Command::Status => run_status().await,
         Command::Tui => {
@@ -256,6 +279,62 @@ async fn run_rss(cmd: RssCmd) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// Install the daemon as a login service and start it. macOS: launchd agent;
+/// Linux: systemd user unit. Prints the unit path and loads it.
+fn install_daemon() -> anyhow::Result<()> {
+    let exe = std::env::current_exe().context("resolving own binary")?;
+    let label = "dev.torq.daemon";
+    #[cfg(target_os = "macos")]
+    {
+        let dir = dirs::home_dir()
+            .expect("home dir")
+            .join("Library/LaunchAgents");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{label}.plist"));
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>{label}</string>
+<key>ProgramArguments</key><array><string>{}</string><string>daemon</string></array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+</dict></plist>
+"#,
+            exe.display()
+        );
+        std::fs::write(&path, plist)?;
+        std::process::Command::new("launchctl")
+            .args(["load", path.to_str().expect("plist path")])
+            .status()
+            .context("launchctl load")?;
+        println!("installed + loaded {}", path.display());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = dirs::config_dir().expect("config dir").join("systemd/user");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("torq-daemon.service");
+        let unit = format!(
+            "[Unit]\nDescription=torq daemon\nAfter=network-online.target\n\n[Service]\nExecStart={} daemon\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+            exe.display()
+        );
+        std::fs::write(&path, unit)?;
+        std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status()
+            .context("systemctl daemon-reload")?;
+        std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "torq-daemon.service"])
+            .status()
+            .context("systemctl enable")?;
+        println!("installed + started {}", path.display());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    anyhow::bail!("service install is only supported on macOS and Linux");
     Ok(())
 }
 
