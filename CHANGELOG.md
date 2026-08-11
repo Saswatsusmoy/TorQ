@@ -3,6 +3,21 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.4] — 2026-08-11
+
+### Changed
+
+- TUI redesigned with a pane-based layout, re-themed on the everforest
+  palette (sainnhe/everforest dark): green accent family — selection/pointers
+  green, success/checks aqua, errors red, warnings yellow; wordmark in a
+  cream→green gradient. Layout: sidebar rail (All/Games/Movies/TV/Anime +
+  Downloads/Seeding with counts), rounded panels (`╭─ Title (n) ─╮`),
+  a bordered results table (`│` column dividers; `Seeds`/`Lch`/`Size`/`Src`
+  columns), animated progress bars with sheen, per-source tags, results
+  detail view, sortable columns, contextual footer hints, two-column help
+  card, and a centered splash with an editable search bar. Layout and colors
+  are verified by buffer-exact render tests.
+
 ## [0.1.3] — 2026-08-11
 
 ### Performance
@@ -37,16 +52,6 @@ semantic versioning.
   let-chains. No behavioral change.
 - librqbit switched to its `rust-tls` backend — the binary no longer links
   openssl and Linux cross-builds work.
-- TUI redesigned with a pane-based layout, re-themed on the everforest
-  palette (sainnhe/everforest dark): green accent family — selection/pointers
-  green, success/checks aqua, errors red, warnings yellow; wordmark in a
-  cream→green gradient. Layout: sidebar rail (All/Games/Movies/TV/Anime +
-  Downloads/Seeding with counts), rounded panels (`╭─ Title (n) ─╮`),
-  a bordered results table (`│` column dividers; `Seeds`/`Lch`/`Size`/`Src`
-  columns), animated progress bars with sheen, per-source tags, results
-  detail view, sortable columns, contextual footer hints, two-column help
-  card, and a centered splash with an editable search bar. Layout and colors
-  are verified by buffer-exact render tests.
 
 ### Added
 
