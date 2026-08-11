@@ -1,16 +1,21 @@
 //! Small shared helpers: magnets, size/date parsing, host failover fetches.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
+/// Per-host request timeout: dead mirrors cost at most this much each, and
+/// with parallel probing the search waits only for the fastest answer.
+const HOST_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// How long a remembered "last working host" is trusted before re-probing
 /// from the top. Host health changes (Cloudflare flaps, mirrors going down),
-/// so preferences go stale; a stale preference costs at most one extra
-/// per-host timeout per window, which is never worse than today's fixed
-/// order.
+/// so preferences go stale; with parallel probing a stale preference costs
+/// nothing extra — the other hosts are probed in the same round.
 const HOST_PREF_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy)]
@@ -135,29 +140,51 @@ pub fn canonicalize_hash(h: &str) -> Option<String> {
 ///
 /// The last host that succeeded for this host set is tried first on the next
 /// call (with a TTL), so repeatedly-dead mirrors are skipped instead of
-/// probed on every request.
+/// probed on every request. All hosts are probed in parallel; the first
+/// success wins. Sequential probing made the worst case ~N × timeout (e.g.
+/// three dead 1337x mirrors at 8s each ≈ 30s); parallel probing bounds it to
+/// the latency of the fastest answering host.
 pub async fn fetch_with_failover(
     client: &reqwest::Client,
     hosts: &[String],
     path: &str,
 ) -> anyhow::Result<String> {
-    let mut last: Option<anyhow::Error> = None;
+    anyhow::ensure!(!hosts.is_empty(), "no hosts");
     let start = pref_start(hosts);
-    for off in 0..hosts.len() {
-        let i = (start + off) % hosts.len();
-        let url = format!("{}{path}", hosts[i]);
-        let req = client.get(&url).timeout(std::time::Duration::from_secs(8));
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let body = resp.text().await.context("reading response body")?;
-                pref_record(hosts, i);
+
+    let probe = |off: usize| {
+        let url = format!("{}{path}", hosts[(start + off) % hosts.len()]);
+        async move {
+            let t0 = std::time::Instant::now();
+            let req = client.get(&url).timeout(HOST_TIMEOUT);
+            let res = match req.send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    resp.text().await.context("reading response body").map(|b| (off, b))
+                }
+                Ok(resp) => Err(anyhow::anyhow!("{url}: HTTP {}", resp.status())),
+                Err(e) => Err(anyhow::anyhow!("{url}: {e}")),
+            };
+            tracing::debug!(url, ms = t0.elapsed().as_millis(), ok = res.is_ok(), "failover probe");
+            res
+        }
+    };
+    let mut pending: Vec<_> = (0..hosts.len())
+        .map(|off| Box::pin(probe(off)) as Pin<Box<dyn Future<Output = anyhow::Result<(usize, String)>> + Send>>)
+        .collect();
+
+    let mut last_err: Option<anyhow::Error> = None;
+    while !pending.is_empty() {
+        let (res, _, rest) = futures::future::select_all(pending).await;
+        pending = rest;
+        match res {
+            Ok((off, body)) => {
+                pref_record(hosts, (start + off) % hosts.len());
                 return Ok(body);
             }
-            Ok(resp) => last = Some(anyhow::anyhow!("{url}: HTTP {}", resp.status())),
-            Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
+            Err(e) => last_err = Some(e),
         }
     }
-    Err(last.unwrap_or_else(|| anyhow::anyhow!("no hosts")))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no hosts")))
 }
 
 #[cfg(test)]

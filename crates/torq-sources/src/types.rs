@@ -49,6 +49,7 @@ pub trait Source: Send + Sync {
 pub fn http_client(socks_proxy: Option<&str>) -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/125.0 Safari/537.36")
+        .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(20));
     if let Some(proxy) = socks_proxy {
         builder = builder.proxy(reqwest::Proxy::all(proxy)?);
