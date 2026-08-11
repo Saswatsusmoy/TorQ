@@ -14,6 +14,8 @@ toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 librqbit.workspace = true
+librqbit-core = "5"
+buffers = { version = "4", package = "librqbit-buffers" }
 axum.workspace = true
 dirs.workspace = true
 url.workspace = true
@@ -24,5 +26,6 @@ notify.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true
 regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-util = { version = "0.7", features = ["io"] }
 torq-sources = { path = "../torq-sources" }

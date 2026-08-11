@@ -8,6 +8,7 @@
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use librqbit::api::{Api, TorrentIdOrHash};
@@ -82,22 +83,58 @@ impl Engine {
     }
 
     /// Add a magnet link or bare 40-char infohash. The caller matches on
-    /// [`AddTorrentResponse`] for the torrent id/handle.
+    /// [`AddTorrentResponse`] for the torrent id/handle. Bounded: a magnet
+    /// whose metadata never resolves (no reachable peers) errors after 30s
+    /// instead of hanging the request forever (librqbit has no resolve timeout).
     pub async fn add_magnet(&self, magnet: &str) -> Result<AddTorrentResponse> {
-        self.session
-            .add_torrent(
-                AddTorrent::from_url(magnet.to_string()),
-                Some(default_add_options()),
-            )
+        let fut = self.session.add_torrent(
+            AddTorrent::from_url(magnet.to_string()),
+            Some(default_add_options()),
+        );
+        tokio::time::timeout(Duration::from_secs(30), fut)
             .await
+            .context("metadata resolution timed out (no reachable peers?)")?
+            .context("adding torrent")
+    }
+
+    /// Apply session-wide rate limits live (None = unlimited).
+    pub fn set_limits(&self, upload_bps: Option<u32>, download_bps: Option<u32>) {
+        self.session
+            .ratelimits
+            .set_upload_bps(upload_bps.and_then(NonZeroU32::new));
+        self.session
+            .ratelimits
+            .set_download_bps(download_bps.and_then(NonZeroU32::new));
+    }
+
+    /// Add a magnet, downloading into `output_folder` (cross-seed: point it at
+    /// existing library data so the piece check finds it instead of fetching).
+    pub async fn add_magnet_with_output(
+        &self,
+        magnet: &str,
+        output_folder: PathBuf,
+    ) -> Result<AddTorrentResponse> {
+        let opts = AddTorrentOptions {
+            output_folder: Some(output_folder.to_string_lossy().into_owned()),
+            ..default_add_options()
+        };
+        let fut = self
+            .session
+            .add_torrent(AddTorrent::from_url(magnet.to_string()), Some(opts));
+        tokio::time::timeout(Duration::from_secs(30), fut)
+            .await
+            .context("metadata resolution timed out (no reachable peers?)")?
             .context("adding torrent")
     }
 
     /// Add an in-memory .torrent file (bytes from disk, HTTP, or watch folder).
     pub async fn add_torrent_bytes(&self, bytes: Vec<u8>) -> Result<AddTorrentResponse> {
-        self.session
-            .add_torrent(AddTorrent::from_bytes(bytes), Some(default_add_options()))
+        let fut = self
+            .session
+            .add_torrent(AddTorrent::from_bytes(bytes), Some(default_add_options()));
+        tokio::time::timeout(Duration::from_secs(30), fut)
             .await
+            .context("metadata resolution timed out")?
             .context("adding torrent")
     }
 

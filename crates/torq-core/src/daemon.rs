@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::engine::Engine;
+use crate::library::Library;
 use crate::rss::Subscriptions;
 
 /// How many torrents download at once (torlink parity; tunable later).
@@ -95,14 +96,18 @@ pub struct Daemon {
     events: broadcast::Sender<Event>,
     /// RSS subscriptions; polled by a background task.
     pub rss: Arc<Subscriptions>,
+    /// Cross-seed index of .torrent files whose data is already on disk.
+    pub library: Arc<Library>,
 }
 
 impl Daemon {
     /// Start the daemon: hydrate metadata for restored torrents, promote any
-    /// queued into free slots, and spawn the transition + RSS poll ticks.
+    /// queued into free slots, and spawn the transition + RSS poll + schedule
+    /// ticks.
     pub async fn start(config: &Config, engine: Arc<Engine>) -> Result<Arc<Self>> {
         let (events, _) = broadcast::channel(512);
         let rss = Subscriptions::load(config.state_dir.join("subscriptions.json"));
+        let library = Library::new(config.library_dirs.clone());
         let daemon = Arc::new(Self {
             engine,
             max_active: DEFAULT_MAX_ACTIVE,
@@ -110,6 +115,7 @@ impl Daemon {
             meta: Mutex::new(HashMap::new()),
             events,
             rss,
+            library,
         });
 
         daemon.load_meta();
@@ -129,6 +135,15 @@ impl Daemon {
 
         tokio::spawn(tick_loop(daemon.clone()));
         tokio::spawn(rss_poll_loop(daemon.clone(), config.socks_proxy.clone()));
+        if !config.library_dirs.is_empty() {
+            let lib = daemon.library.clone();
+            tokio::spawn(async move {
+                let _ = lib.scan();
+            });
+        }
+        if !config.schedule.is_empty() {
+            spawn_scheduler(daemon.clone(), config.schedule.clone());
+        }
         Ok(daemon)
     }
 
@@ -144,8 +159,25 @@ impl Daemon {
 
     pub async fn add_magnet(&self, magnet: &str, paused: bool) -> Result<TorrentView> {
         let magnet = magnet.trim();
-        let resp = self.engine.add_magnet(magnet).await?;
+        // Cross-seed: if the hash exists in the library, download "into" the
+        // existing data dir so the piece check finds it instead of fetching.
+        let resp = match self.cross_seed_dir(magnet) {
+            Some(dir) => self.engine.add_magnet_with_output(magnet, dir).await?,
+            None => self.engine.add_magnet(magnet).await?,
+        };
         self.finish_add(resp, paused).await
+    }
+
+    /// Library data dir for a magnet's infohash, if indexed.
+    fn cross_seed_dir(&self, magnet: &str) -> Option<PathBuf> {
+        let hash = magnet
+            .split("urn:btih:")
+            .nth(1)
+            .and_then(|s| s.split('&').next())
+            .and_then(torq_sources::util::canonicalize_hash)?;
+        let entry = self.library.lookup(&hash)?;
+        info!(%hash, dir = %entry.data_dir.display(), "cross-seed: data already in library");
+        Some(entry.data_dir)
     }
 
     pub async fn add_torrent_bytes(&self, bytes: Vec<u8>, paused: bool) -> Result<TorrentView> {
@@ -435,6 +467,54 @@ async fn rss_poll_loop(daemon: Arc<Daemon>, socks_proxy: Option<String>) {
     }
 }
 
+/// Apply the active bandwidth schedule every minute; outside any window the
+/// flat `upload_bps`/`download_bps` limits from config apply (already set on
+/// the session at startup).
+fn spawn_scheduler(daemon: Arc<Daemon>, schedule: Vec<crate::config::ScheduleEntry>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            let (up, down) = active_limits(&schedule, local_minutes());
+            daemon.engine.set_limits(up, down);
+        }
+    });
+}
+
+/// Minutes since local midnight (wall-clock): schedules are defined in local
+/// time, so a UTC clock would shift the window with timezone/DST.
+fn local_minutes() -> u32 {
+    use chrono::Timelike;
+    chrono::Local::now().num_seconds_from_midnight() / 60
+}
+
+/// Limits for the current minute: the first matching schedule window, else
+/// None (meaning "revert to the flat config limits", which the engine holds).
+fn active_limits(
+    schedule: &[crate::config::ScheduleEntry],
+    now: u32,
+) -> (Option<u32>, Option<u32>) {
+    for e in schedule {
+        let (Some(s), Some(end)) = (parse_hhmm(&e.start), parse_hhmm(&e.end)) else {
+            continue;
+        };
+        let active = if s < end {
+            now >= s && now < end
+        } else {
+            now >= s || now < end // overnight window
+        };
+        if active {
+            return (e.upload_bps, e.download_bps);
+        }
+    }
+    (None, None)
+}
+
+fn parse_hhmm(s: &str) -> Option<u32> {
+    let (h, m) = s.split_once(':')?;
+    Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?)
+}
+
 /// Status precedence: error → completed → user-paused → engine-paused (queued)
 /// → downloading. A completed torrent that the user paused stays completed.
 fn derive_status(stats: &TorrentStats, meta: &Meta) -> Status {
@@ -599,5 +679,24 @@ mod tests {
         assert_eq!(v.status, Status::Downloading);
         assert!((v.progress - 0.25).abs() < f32::EPSILON);
         assert_eq!(v.downloaded_bytes, 50);
+    }
+
+    #[test]
+    fn schedule_windows_and_midnight() {
+        use crate::config::ScheduleEntry;
+        let entry = |start: &str, end: &str, up: u32| ScheduleEntry {
+            start: start.into(),
+            end: end.into(),
+            upload_bps: Some(up),
+            download_bps: None,
+        };
+        let sched = vec![entry("08:00", "12:00", 100), entry("23:00", "02:00", 200)];
+        assert_eq!(active_limits(&sched, 9 * 60), (Some(100), None));
+        assert_eq!(active_limits(&sched, 12 * 60), (None, None)); // end exclusive
+        assert_eq!(active_limits(&sched, 23 * 60 + 30), (Some(200), None)); // overnight
+        assert_eq!(active_limits(&sched, 60), (Some(200), None));
+        assert_eq!(active_limits(&sched, 3 * 60), (None, None));
+        assert_eq!(parse_hhmm("08:30"), Some(510));
+        assert_eq!(parse_hhmm("x"), None);
     }
 }

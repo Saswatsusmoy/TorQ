@@ -3705,10 +3705,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "dirs",
  "futures",
  "getrandom 0.2.17",
  "librqbit",
+ "librqbit-buffers",
+ "librqbit-core",
  "notify",
  "parking_lot",
  "regex",

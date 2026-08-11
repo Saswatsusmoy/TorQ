@@ -5,6 +5,7 @@
 //! clients can read it).
 
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -13,7 +14,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use futures::stream::{Stream, StreamExt};
 use librqbit::api::TorrentIdOrHash;
@@ -56,6 +57,8 @@ pub fn router(
         .route("/search", get(search))
         .route("/rss", get(list_rss).post(add_rss))
         .route("/rss/{id}", delete(remove_rss))
+        .route("/library", get(library_status).post(library_scan))
+        .route("/config/limits", patch(set_limits))
         .route("/events", get(events))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -381,6 +384,51 @@ async fn remove_rss(
     } else {
         Err(ApiError::NotFound(format!("subscription {id} not found")))
     }
+}
+
+#[derive(Serialize)]
+struct LibraryStatus {
+    indexed: usize,
+    dirs: Vec<PathBuf>,
+}
+
+async fn library_status(State(state): State<Arc<AppState>>) -> Json<LibraryStatus> {
+    Json(LibraryStatus {
+        indexed: state.daemon.library.count(),
+        dirs: state.daemon.library.dirs(),
+    })
+}
+
+/// Rescan library dirs; returns the number of torrents indexed.
+async fn library_scan(State(state): State<Arc<AppState>>) -> Result<Json<LibraryStatus>, ApiError> {
+    state.daemon.library.scan()?;
+    Ok(Json(LibraryStatus {
+        indexed: state.daemon.library.count(),
+        dirs: state.daemon.library.dirs(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct LimitsReq {
+    upload_bps: Option<u32>,
+    download_bps: Option<u32>,
+}
+
+/// Apply rate limits live (None clears the limit). Persists to config so the
+/// daemon restarts with them.
+async fn set_limits(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LimitsReq>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .daemon
+        .engine()
+        .set_limits(req.upload_bps, req.download_bps);
+    let mut config = crate::config::Config::load()?;
+    config.upload_bps = req.upload_bps;
+    config.download_bps = req.download_bps;
+    config.save()?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn events(

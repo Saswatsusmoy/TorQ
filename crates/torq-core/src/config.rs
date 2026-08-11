@@ -43,6 +43,22 @@ pub struct Config {
     pub api_port: u16,
     /// Folders watched for dropped .torrent / magnet files.
     pub watch_dirs: Vec<PathBuf>,
+    /// Directories scanned for .torrent files whose data is already on disk;
+    /// re-adding a matching infohash cross-seeds from the existing files
+    /// (convention: torrent files live next to their data).
+    pub library_dirs: Vec<PathBuf>,
+    /// Time-of-day bandwidth schedule; empty = always use the flat limits.
+    pub schedule: Vec<ScheduleEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleEntry {
+    /// "HH:MM" 24h, inclusive.
+    pub start: String,
+    /// "HH:MM" 24h, exclusive. Crossing midnight is allowed.
+    pub end: String,
+    pub upload_bps: Option<u32>,
+    pub download_bps: Option<u32>,
 }
 
 impl Default for Config {
@@ -57,6 +73,8 @@ impl Default for Config {
             auth_token: generate_token(),
             api_port: 8170,
             watch_dirs: Vec::new(),
+            library_dirs: Vec::new(),
+            schedule: Vec::new(),
         }
     }
 }

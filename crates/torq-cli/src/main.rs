@@ -43,6 +43,26 @@ enum Command {
     Stream { id: String },
     /// Open the torrent's video in the system player (streams while downloading).
     Play { id: String },
+    /// Cross-seed library: scan .torrent dirs, show index status.
+    Library {
+        #[command(subcommand)]
+        cmd: LibraryCmd,
+    },
+    /// Set session rate limits live (bytes/sec; omit to clear).
+    Limits {
+        #[arg(long)]
+        upload: Option<u32>,
+        #[arg(long)]
+        download: Option<u32>,
+    },
+}
+
+#[derive(Subcommand)]
+enum LibraryCmd {
+    /// Scan library dirs for .torrent files (re-adding a match cross-seeds).
+    Scan,
+    /// Show how many torrents are indexed and from which dirs.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -79,7 +99,51 @@ async fn main() -> anyhow::Result<()> {
         Command::Rss { cmd } => run_rss(cmd).await,
         Command::Stream { id } => run_stream(&id, false).await,
         Command::Play { id } => run_stream(&id, true).await,
+        Command::Library { cmd } => run_library(cmd).await,
+        Command::Limits { upload, download } => {
+            let config = Config::load()?;
+            let client = reqwest::Client::new();
+            let base = format!("http://127.0.0.1:{}", config.api_port);
+            let status = client
+                .patch(format!("{base}/config/limits"))
+                .bearer_auth(&config.auth_token)
+                .json(&serde_json::json!({"upload_bps": upload, "download_bps": download}))
+                .send()
+                .await
+                .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+                .status();
+            anyhow::ensure!(status.is_success(), "limits failed: HTTP {status}");
+            println!(
+                "limits: up={} B/s down={} B/s",
+                upload.unwrap_or(0),
+                download.unwrap_or(0)
+            );
+            Ok(())
+        }
     }
+}
+
+async fn run_library(cmd: LibraryCmd) -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", config.api_port);
+    let method = match cmd {
+        LibraryCmd::Scan => client.post(format!("{base}/library")),
+        LibraryCmd::Status => client.get(format!("{base}/library")),
+    };
+    let status: serde_json::Value = method
+        .bearer_auth(&config.auth_token)
+        .send()
+        .await
+        .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+        .error_for_status()?
+        .json()
+        .await?;
+    println!(
+        "indexed {} torrent(s) from: {}",
+        status["indexed"], status["dirs"]
+    );
+    Ok(())
 }
 
 /// Resolve the stream URL for a torrent: prefer the largest video file, fall

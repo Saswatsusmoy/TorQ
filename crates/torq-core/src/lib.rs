@@ -7,6 +7,7 @@ pub mod api;
 pub mod config;
 pub mod daemon;
 pub mod engine;
+pub mod library;
 pub mod rss;
 pub mod watch;
 
