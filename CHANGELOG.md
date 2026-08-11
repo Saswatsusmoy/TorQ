@@ -3,6 +3,25 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.5] — 2026-08-11
+
+### Performance
+
+- Parallel host failover: `fetch_with_failover` probes every mirror at once
+  (remembered-good host first) and takes the first success. Sequential
+  probing made three dead mirrors cost ~8s each (~30s worst case for 1337x
+  behind a Cloudflare flap); the shared HTTP client also gets a 5s connect
+  timeout. Measured against torlink on the same query and window: full
+  10-source search median 2.8s vs 7.6s (~2.7x), x1337 ~3-5s vs 7.5s.
+
+### Added
+
+- `GET /torrents/{id}/play` resolves the playable stream URL (largest video
+  file, fallback largest file) — one implementation shared by `torq play`
+  and the TUI.
+- TUI `P` key in Downloads/Seeding opens the selected torrent in the OS
+  player; footer always reserves the `?` help hint from truncation.
+
 ## [0.1.4] — 2026-08-11
 
 ### Changed

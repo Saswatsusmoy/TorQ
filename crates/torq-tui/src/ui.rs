@@ -897,11 +897,13 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ],
         };
     }
+    // r (refresh) is omitted from the footer: the list auto-refreshes every
+    // 2s and via SSE, and the footer must fit narrow terminals.
     let mut hints = vec![
         ("↑↓←→", "Move"),
         ("p", "Pause"),
         ("x", "Remove"),
-        ("r", "Refresh"),
+        ("P", "Play"),
         ("tab", "Switch"),
         ("?", "Keys"),
     ];
@@ -912,7 +914,11 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, cols: u16, app: &App) {
-    let hints = footer_hints(app);
+    // The help hint is reserved from truncation — it is the one users need
+    // most, and the footer can outgrow narrow terminals as hints accrue.
+    let mut hints = footer_hints(app);
+    let help = hints.iter().position(|(k, _)| *k == "?").map(|i| hints.remove(i));
+
     let dim = Style::new().add_modifier(Modifier::DIM);
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, (keys, label)) in hints.iter().enumerate() {
@@ -922,16 +928,53 @@ fn draw_footer(f: &mut Frame, area: Rect, cols: u16, app: &App) {
         spans.push(Span::styled(*keys, Style::new().fg(theme::ALT)));
         spans.push(Span::styled(format!(" {label}"), dim));
     }
-    let w = cols.saturating_sub(2);
+    let w = (cols.saturating_sub(2)) as usize;
+    let help_cells = if help.is_some() { 9 } else { 0 }; // "   ? Keys"
+    let mut fitted = truncate_spans(spans, w.saturating_sub(help_cells));
+    if let Some((keys, label)) = help {
+        fitted.push(Span::styled("   ", dim));
+        fitted.push(Span::styled(keys, Style::new().fg(theme::ALT)));
+        fitted.push(Span::styled(format!(" {label}"), dim));
+    }
+    while str_w_of(&fitted) < w {
+        fitted.push(Span::raw(" "));
+    }
     f.render_widget(
-        Paragraph::new(Line::from(fit(spans, w as usize))).style(Style::new().bg(theme::BG)),
+        Paragraph::new(Line::from(fitted)).style(Style::new().bg(theme::BG)),
         Rect {
             x: 1,
             y: area.y,
-            width: w,
+            width: cols.saturating_sub(2),
             height: 1,
         },
     );
+}
+
+/// Total cell width of a span list.
+fn str_w_of(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| str_w(&s.content)).sum()
+}
+
+/// Truncate spans to `w` cells without padding (fit() pads; callers that
+/// append reserved hints need the raw truncation).
+fn truncate_spans(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for sp in spans {
+        if used >= w {
+            break;
+        }
+        let n = str_w(&sp.content);
+        if n <= w - used {
+            out.push(sp);
+            used += n;
+        } else {
+            let cut: String = sp.content.chars().take(w - used).collect();
+            out.push(Span::styled(cut, sp.style));
+            break;
+        }
+    }
+    out
 }
 
 struct HelpGroup {
@@ -968,6 +1011,7 @@ const HELP_GROUPS: [HelpGroup; 3] = [
             ("x", "Remove from queue"),
             ("D", "Remove and delete files"),
             ("r", "Refresh"),
+            ("P", "Play in player"),
         ],
     },
 ];
@@ -1500,7 +1544,7 @@ mod render_tests {
         assert_eq!(row(&buf, 11, 1, 16), "▌ Downloads (1) ");
         assert_eq!(
             row(&buf, 23, 1, 78).trim_end(),
-            "↑↓←→ Move   p Pause   x Remove   D Delete   r Refresh   tab Switch   ? Keys"
+            "↑↓←→ Move   p Pause   x Remove   D Delete   P Play   tab Switch   ? Keys"
         );
     }
 
@@ -1523,7 +1567,7 @@ mod render_tests {
         );
         assert_eq!(
             row(&buf, 23, 1, 78).trim_end(),
-            "↑↓←→ Move   p Pause   x Remove   r Refresh   tab Switch   ? Keys"
+            "↑↓←→ Move   p Pause   x Remove   P Play   tab Switch   ? Keys"
         );
     }
 

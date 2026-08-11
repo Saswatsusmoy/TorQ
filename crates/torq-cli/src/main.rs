@@ -172,14 +172,14 @@ async fn run_library(cmd: LibraryCmd) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve the stream URL for a torrent: prefer the largest video file, fall
-/// back to the largest file overall. With `launch`, hand it to the OS player.
+/// Resolve the playable stream URL via the daemon's /play endpoint; with
+/// `launch`, hand it to the OS player.
 async fn run_stream(id: &str, launch: bool) -> anyhow::Result<()> {
     let config = Config::load()?;
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{}", config.api_port);
-    let files: Vec<serde_json::Value> = client
-        .get(format!("{base}/torrents/{id}/files"))
+    let play: serde_json::Value = client
+        .get(format!("{base}/torrents/{id}/play"))
         .bearer_auth(&config.auth_token)
         .send()
         .await
@@ -187,39 +187,18 @@ async fn run_stream(id: &str, launch: bool) -> anyhow::Result<()> {
         .error_for_status()?
         .json()
         .await?;
-
-    const VIDEO: &[&str] = &[
-        "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "wmv", "flv",
-    ];
-    let is_video = |name: &str| {
-        name.rsplit('.')
-            .next()
-            .is_some_and(|e| VIDEO.contains(&e.to_ascii_lowercase().as_str()))
-    };
-    let pick = files
-        .iter()
-        .filter(|f| f["name"].as_str().is_some_and(is_video))
-        .max_by_key(|f| f["length"].as_u64().unwrap_or(0))
-        .or_else(|| {
-            files
-                .iter()
-                .max_by_key(|f| f["length"].as_u64().unwrap_or(0))
-        })
-        .context("torrent has no files")?;
-    let file_id = pick["id"].as_u64().context("missing file id")?;
-    let url = format!("{base}/torrents/{id}/stream/{file_id}");
+    let url = play["url"].as_str().unwrap_or_default();
     println!("{url}");
     println!(
         "  {} ({})",
-        pick["name"].as_str().unwrap_or("?"),
-        pick["length"].as_u64().unwrap_or(0)
+        play["name"].as_str().unwrap_or("?"),
+        play["length"].as_u64().unwrap_or(0)
     );
-
     if launch {
         #[cfg(target_os = "macos")]
-        std::process::Command::new("open").arg(&url).spawn()?;
+        std::process::Command::new("open").arg(url).spawn()?;
         #[cfg(not(target_os = "macos"))]
-        std::process::Command::new("xdg-open").arg(&url).spawn()?;
+        std::process::Command::new("xdg-open").arg(url).spawn()?;
     }
     Ok(())
 }
@@ -356,7 +335,13 @@ async fn run_daemon() -> anyhow::Result<()> {
 
     let sources = std::sync::Arc::new(torq_sources::Registry::all());
     let client = torq_sources::types::http_client(config.socks_proxy.as_deref())?;
-    let app = api::router(daemon, config.auth_token.clone(), sources, client);
+    let app = api::router(
+        daemon,
+        config.auth_token.clone(),
+        sources,
+        client,
+        config.api_port,
+    );
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], config.api_port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await

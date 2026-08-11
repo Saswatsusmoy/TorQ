@@ -11,10 +11,19 @@ use torq_sources::SearchReport;
 #[derive(Debug)]
 pub enum Action {
     Search(String),
-    Add { magnet: String },
+    Add {
+        magnet: String,
+    },
     Pause(usize),
     Resume(usize),
-    Remove { id: usize, delete_files: bool },
+    Remove {
+        id: usize,
+        delete_files: bool,
+    },
+    /// Resolve the torrent's stream URL and open it in the OS player.
+    Play {
+        id: usize,
+    },
     Refresh,
 }
 
@@ -119,6 +128,7 @@ async fn client_loop(
                     }
                     refresh(&http, &base, &auth, &msgs).await;
                 }
+                Action::Play { id } => play_torrent(&http, &base, &auth, &msgs, id).await,
                 Action::Refresh => refresh(&http, &base, &auth, &msgs).await,
             },
             _ = interval.tick() => refresh(&http, &base, &auth, &msgs).await,
@@ -144,6 +154,32 @@ async fn post_torrent(
         let _ = msgs.send(UiMsg::Notice(format!("{action} failed: {e}")));
     }
     refresh(http, base, auth, msgs).await;
+}
+
+/// Ask the daemon for the playable stream URL and launch the OS player.
+async fn play_torrent(
+    http: &reqwest::Client,
+    base: &str,
+    auth: &str,
+    msgs: &UnboundedSender<UiMsg>,
+    id: usize,
+) {
+    let req = http
+        .get(format!("{base}/torrents/{id}/play"))
+        .header("authorization", auth);
+    match get_json::<serde_json::Value>(req).await {
+        Ok(play) => {
+            if let Some(url) = play["url"].as_str() {
+                #[cfg(target_os = "macos")]
+                std::process::Command::new("open").arg(url).spawn().ok();
+                #[cfg(not(target_os = "macos"))]
+                std::process::Command::new("xdg-open").arg(url).spawn().ok();
+            }
+        }
+        Err(e) => {
+            let _ = msgs.send(UiMsg::Notice(format!("play failed: {e}")));
+        }
+    }
 }
 
 async fn refresh(http: &reqwest::Client, base: &str, auth: &str, msgs: &UnboundedSender<UiMsg>) {

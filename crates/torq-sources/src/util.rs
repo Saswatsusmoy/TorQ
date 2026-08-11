@@ -158,18 +158,28 @@ pub async fn fetch_with_failover(
             let t0 = std::time::Instant::now();
             let req = client.get(&url).timeout(HOST_TIMEOUT);
             let res = match req.send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    resp.text().await.context("reading response body").map(|b| (off, b))
-                }
+                Ok(resp) if resp.status().is_success() => resp
+                    .text()
+                    .await
+                    .context("reading response body")
+                    .map(|b| (off, b)),
                 Ok(resp) => Err(anyhow::anyhow!("{url}: HTTP {}", resp.status())),
                 Err(e) => Err(anyhow::anyhow!("{url}: {e}")),
             };
-            tracing::debug!(url, ms = t0.elapsed().as_millis(), ok = res.is_ok(), "failover probe");
+            tracing::debug!(
+                url,
+                ms = t0.elapsed().as_millis(),
+                ok = res.is_ok(),
+                "failover probe"
+            );
             res
         }
     };
     let mut pending: Vec<_> = (0..hosts.len())
-        .map(|off| Box::pin(probe(off)) as Pin<Box<dyn Future<Output = anyhow::Result<(usize, String)>> + Send>>)
+        .map(|off| {
+            Box::pin(probe(off))
+                as Pin<Box<dyn Future<Output = anyhow::Result<(usize, String)>> + Send>>
+        })
         .collect();
 
     let mut last_err: Option<anyhow::Error> = None;

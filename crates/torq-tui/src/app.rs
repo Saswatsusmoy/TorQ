@@ -579,6 +579,11 @@ impl App {
                     }
                 }
                 KeyCode::Char('r') => client.send(Action::Refresh),
+                KeyCode::Char('P') => {
+                    if let Some(v) = visible.get(self.dl_cursor) {
+                        client.send(Action::Play { id: v.id });
+                    }
+                }
                 _ => {}
             }
         }
@@ -630,6 +635,18 @@ mod tests {
     fn client() -> (Client, mpsc::UnboundedReceiver<Action>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Client::for_test(tx), rx)
+    }
+
+    #[test]
+    fn play_key_sends_play_action() {
+        let (client, mut rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.torrents = vec![view(1, Status::Completed)];
+        app.section = Section::Seeding;
+        app.dl_cursor = 0;
+        app.handle_key(key(KeyCode::Char('P')), &client).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Action::Play { id: 1 }));
     }
 
     fn key(c: KeyCode) -> KeyEvent {

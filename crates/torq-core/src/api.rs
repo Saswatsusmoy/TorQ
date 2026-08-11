@@ -31,6 +31,7 @@ pub struct AppState {
     pub daemon: Arc<Daemon>,
     pub sources: Arc<torq_sources::Registry>,
     pub client: reqwest::Client,
+    api_port: u16,
     auth_token: String,
 }
 
@@ -39,11 +40,13 @@ pub fn router(
     auth_token: String,
     sources: Arc<torq_sources::Registry>,
     client: reqwest::Client,
+    api_port: u16,
 ) -> Router {
     let state = Arc::new(AppState {
         daemon,
         sources,
         client,
+        api_port,
         auth_token,
     });
     Router::new()
@@ -53,6 +56,7 @@ pub fn router(
         .route("/torrents/{id}/pause", post(pause_torrent))
         .route("/torrents/{id}/resume", post(resume_torrent))
         .route("/torrents/{id}/files", get(torrent_files))
+        .route("/torrents/{id}/play", get(play_file))
         .route("/torrents/{id}/stream/{file_id}", get(stream_file))
         .route("/search", get(search))
         .route("/rss", get(list_rss).post(add_rss))
@@ -112,12 +116,28 @@ async fn list_torrents(State(state): State<Arc<AppState>>) -> Json<Vec<TorrentVi
     Json(state.daemon.views())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, PartialEq)]
 struct FileInfo {
     id: usize,
     name: String,
     length: u64,
     included: bool,
+}
+
+fn file_list(details: &librqbit::api::TorrentDetailsResponse) -> Vec<FileInfo> {
+    details
+        .files
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, f)| FileInfo {
+            id: i,
+            name: f.components.join("/"),
+            length: f.length,
+            included: f.included,
+        })
+        .collect()
 }
 
 async fn torrent_files(
@@ -129,19 +149,61 @@ async fn torrent_files(
         .engine()
         .api()
         .api_torrent_details(TorrentIdOrHash::parse(&id)?)?;
-    let files = details
-        .files
-        .unwrap_or_default()
+    Ok(Json(file_list(&details)))
+}
+
+const VIDEO_EXTS: &[&str] = &[
+    "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "wmv", "flv",
+];
+
+/// Largest video file, else the largest file overall — what a player wants.
+fn pick_play_file(files: &[FileInfo]) -> Option<&FileInfo> {
+    let is_video = |f: &FileInfo| {
+        f.name
+            .rsplit('.')
+            .next()
+            .is_some_and(|e| VIDEO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+    };
+    files
         .iter()
-        .enumerate()
-        .map(|(i, f)| FileInfo {
-            id: i,
-            name: f.components.join("/"),
-            length: f.length,
-            included: f.included,
-        })
-        .collect();
-    Ok(Json(files))
+        .filter(|f| is_video(f))
+        .max_by_key(|f| f.length)
+        .or_else(|| files.iter().max_by_key(|f| f.length))
+}
+
+#[derive(Serialize)]
+struct PlayResponse {
+    url: String,
+    name: String,
+    file_id: usize,
+    length: u64,
+}
+
+/// Resolve the playable stream URL for a torrent: the largest video file
+/// (fallback: largest file), served by the range endpoint. One implementation
+/// shared by `torq play` and the TUI's `P` key.
+async fn play_file(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<PlayResponse>, ApiError> {
+    let details = state
+        .daemon
+        .engine()
+        .api()
+        .api_torrent_details(TorrentIdOrHash::parse(&id)?)?;
+    let files = file_list(&details);
+    let file =
+        pick_play_file(&files).ok_or_else(|| ApiError::NotFound("torrent has no files".into()))?;
+    let url = format!(
+        "http://127.0.0.1:{}/torrents/{id}/stream/{}",
+        state.api_port, file.id
+    );
+    Ok(Json(PlayResponse {
+        url,
+        name: file.name.clone(),
+        file_id: file.id,
+        length: file.length,
+    }))
 }
 
 /// HTTP range streaming of a torrent file, works mid-download: librqbit's
@@ -513,5 +575,33 @@ impl From<librqbit::ApiError> for ApiError {
 impl From<std::io::Error> for ApiError {
     fn from(e: std::io::Error) -> Self {
         Self::Internal(anyhow::anyhow!(e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(id: usize, name: &str, length: u64) -> FileInfo {
+        FileInfo {
+            id,
+            name: name.into(),
+            length,
+            included: true,
+        }
+    }
+
+    #[test]
+    fn play_picks_largest_video_else_largest_file() {
+        let files = vec![
+            file(0, "cover.jpg", 500_000),
+            file(1, "movie.mkv", 5_000_000_000),
+            file(2, "sample.mp4", 200_000_000),
+        ];
+        assert_eq!(pick_play_file(&files).unwrap().id, 1);
+        // No video: largest file wins.
+        let only_audio = vec![file(0, "song.mp3", 10_000_000), file(1, "notes.txt", 1)];
+        assert_eq!(pick_play_file(&only_audio).unwrap().id, 0);
+        assert_eq!(pick_play_file(&[]), None);
     }
 }
