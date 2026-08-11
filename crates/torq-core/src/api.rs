@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, Request, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -18,7 +18,9 @@ use axum::{Json, Router};
 use futures::stream::{Stream, StreamExt};
 use librqbit::api::TorrentIdOrHash;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_util::io::ReaderStream;
 
 use crate::daemon::{Daemon, Event, TorrentView};
 use crate::VERSION;
@@ -49,6 +51,8 @@ pub fn router(
         .route("/torrents/{id}", delete(remove_torrent))
         .route("/torrents/{id}/pause", post(pause_torrent))
         .route("/torrents/{id}/resume", post(resume_torrent))
+        .route("/torrents/{id}/files", get(torrent_files))
+        .route("/torrents/{id}/stream/{file_id}", get(stream_file))
         .route("/search", get(search))
         .route("/rss", get(list_rss).post(add_rss))
         .route("/rss/{id}", delete(remove_rss))
@@ -103,6 +107,143 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
 
 async fn list_torrents(State(state): State<Arc<AppState>>) -> Json<Vec<TorrentView>> {
     Json(state.daemon.views())
+}
+
+#[derive(Serialize)]
+struct FileInfo {
+    id: usize,
+    name: String,
+    length: u64,
+    included: bool,
+}
+
+async fn torrent_files(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<FileInfo>>, ApiError> {
+    let details = state
+        .daemon
+        .engine()
+        .api()
+        .api_torrent_details(TorrentIdOrHash::parse(&id)?)?;
+    let files = details
+        .files
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, f)| FileInfo {
+            id: i,
+            name: f.components.join("/"),
+            length: f.length,
+            included: f.included,
+        })
+        .collect();
+    Ok(Json(files))
+}
+
+/// HTTP range streaming of a torrent file, works mid-download: librqbit's
+/// `FileStream` reads pieces on demand (32MB lookahead), so a player can start
+/// before the file completes — mpv/VLC over this endpoint are the target.
+async fn stream_file(
+    State(state): State<Arc<AppState>>,
+    Path((id, file_id)): Path<(String, usize)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let parsed = TorrentIdOrHash::parse(&id)?;
+    let api = state.daemon.engine().api();
+    let details = api.api_torrent_details(parsed)?;
+    let files = details.files.as_deref().unwrap_or_default();
+    let file = files
+        .get(file_id)
+        .ok_or_else(|| ApiError::NotFound(format!("file {file_id} not found")))?;
+    let total = file.length;
+
+    let mut stream = api.api_stream(parsed, file_id)?;
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|r| parse_range(r, total));
+    let (status, start, end) = match range {
+        Some((s, e)) => (StatusCode::PARTIAL_CONTENT, s, e),
+        None => (StatusCode::OK, 0, total.saturating_sub(1)),
+    };
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        stream.seek(std::io::SeekFrom::Start(start)).await?;
+    }
+    let len = end - start + 1;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept-Ranges", HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(mime_for(&file.name)),
+    );
+    if status == StatusCode::PARTIAL_CONTENT {
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).expect("valid header"),
+        );
+    }
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&len.to_string()).expect("valid header"),
+    );
+
+    let body = Body::from_stream(ReaderStream::with_capacity(stream.take(len), 64 * 1024));
+    Ok((status, headers, body).into_response())
+}
+
+/// Parse a single-range `bytes=` header; returns (start, end), inclusive.
+fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
+    if total == 0 {
+        return None;
+    }
+    let spec = header.strip_prefix("bytes=")?;
+    let (start_str, end_str) = spec.split_once('-')?;
+    if start_str.is_empty() {
+        // Suffix range: last N bytes.
+        let n = end_str.parse::<u64>().ok()?;
+        if n == 0 {
+            return None;
+        }
+        let start = total.saturating_sub(n);
+        return Some((start, total - 1));
+    }
+    let start = start_str.parse::<u64>().ok()?;
+    if start >= total {
+        return None;
+    }
+    let end = if end_str.is_empty() {
+        total - 1
+    } else {
+        end_str.parse::<u64>().ok()?.min(total - 1)
+    };
+    (end >= start).then_some((start, end))
+}
+
+fn mime_for(name: &str) -> &'static str {
+    match name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mp4" | "m4v" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "ts" => "video/mp2t",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/mp4",
+        "flac" => "audio/flac",
+        "ogg" | "opus" => "audio/ogg",
+        _ => "application/octet-stream",
+    }
 }
 
 #[derive(Deserialize)]
@@ -289,5 +430,22 @@ impl From<anyhow::Error> for ApiError {
         } else {
             Self::Internal(e)
         }
+    }
+}
+
+impl From<librqbit::ApiError> for ApiError {
+    fn from(e: librqbit::ApiError) -> Self {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            Self::NotFound(msg)
+        } else {
+            Self::Internal(anyhow::anyhow!(msg))
+        }
+    }
+}
+
+impl From<std::io::Error> for ApiError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Internal(anyhow::anyhow!(e))
     }
 }

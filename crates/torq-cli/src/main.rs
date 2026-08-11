@@ -39,6 +39,10 @@ enum Command {
         #[command(subcommand)]
         cmd: RssCmd,
     },
+    /// Print the stream URL for a torrent's video file (pipe to mpv/VLC).
+    Stream { id: String },
+    /// Open the torrent's video in the system player (streams while downloading).
+    Play { id: String },
 }
 
 #[derive(Subcommand)]
@@ -73,7 +77,61 @@ async fn main() -> anyhow::Result<()> {
             torq_tui::run(&config).await
         }
         Command::Rss { cmd } => run_rss(cmd).await,
+        Command::Stream { id } => run_stream(&id, false).await,
+        Command::Play { id } => run_stream(&id, true).await,
     }
+}
+
+/// Resolve the stream URL for a torrent: prefer the largest video file, fall
+/// back to the largest file overall. With `launch`, hand it to the OS player.
+async fn run_stream(id: &str, launch: bool) -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", config.api_port);
+    let files: Vec<serde_json::Value> = client
+        .get(format!("{base}/torrents/{id}/files"))
+        .bearer_auth(&config.auth_token)
+        .send()
+        .await
+        .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    const VIDEO: &[&str] = &[
+        "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "wmv", "flv",
+    ];
+    let is_video = |name: &str| {
+        name.rsplit('.')
+            .next()
+            .is_some_and(|e| VIDEO.contains(&e.to_ascii_lowercase().as_str()))
+    };
+    let pick = files
+        .iter()
+        .filter(|f| f["name"].as_str().is_some_and(is_video))
+        .max_by_key(|f| f["length"].as_u64().unwrap_or(0))
+        .or_else(|| {
+            files
+                .iter()
+                .max_by_key(|f| f["length"].as_u64().unwrap_or(0))
+        })
+        .context("torrent has no files")?;
+    let file_id = pick["id"].as_u64().context("missing file id")?;
+    let url = format!("{base}/torrents/{id}/stream/{file_id}");
+    println!("{url}");
+    println!(
+        "  {} ({})",
+        pick["name"].as_str().unwrap_or("?"),
+        pick["length"].as_u64().unwrap_or(0)
+    );
+
+    if launch {
+        #[cfg(target_os = "macos")]
+        std::process::Command::new("open").arg(&url).spawn()?;
+        #[cfg(not(target_os = "macos"))]
+        std::process::Command::new("xdg-open").arg(&url).spawn()?;
+    }
+    Ok(())
 }
 
 async fn run_rss(cmd: RssCmd) -> anyhow::Result<()> {
