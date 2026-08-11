@@ -1,0 +1,24 @@
+[package]
+name = "torq-core"
+description = "TorQ daemon core: engine wrapper, queue, persistence, REST API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+librqbit.workspace = true
+axum.workspace = true
+dirs.workspace = true
+url.workspace = true
+getrandom.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+notify.workspace = true
+parking_lot.workspace = true
