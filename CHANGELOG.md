@@ -3,7 +3,7 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
-## [Unreleased]
+## [0.1.3] — 2026-08-11
 
 ### Performance
 
@@ -17,6 +17,19 @@ semantic versioning.
   the JSON sources map borrowed arrays instead of cloning the serde_json
   value tree; four per-byte-allocation URL-encoder copies are one shared
   preallocated implementation.
+- New profiling harness (`examples/search_profile.rs`): deterministic fixture
+  replay of the real search pipeline (captured live payloads), plus
+  live/dhat/sample modes.
+
+## [0.1.2] — 2026-08-11
+
+### Fixed
+
+- `torq update` wrote the release `.tar.gz` archive over the binary instead of
+  extracting it, producing a corrupt executable (exec format error). The
+  `torq` entry is now extracted before the atomic swap.
+
+## [0.1.1] — 2026-08-11
 
 ### Changed
 
