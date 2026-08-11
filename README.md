@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/Saswatsusmoy/TorQ/main/install.sh |
 brew install saswatsusmoy/torq/torq
 
 # or from source / crates.io
-cargo install torq
+cargo install torqtui
 ```
 
 Then:

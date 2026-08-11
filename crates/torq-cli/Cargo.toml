@@ -1,5 +1,5 @@
 [package]
-name = "torq"
+name = "torqtui"
 description = "TorQ: fast torrent finder and downloader (daemon, TUI, CLI)"
 version.workspace = true
 edition.workspace = true
@@ -21,6 +21,6 @@ axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
-torq-core = { path = "../torq-core" }
-torq-sources = { path = "../torq-sources" }
-torq-tui = { path = "../torq-tui" }
+torq-core = { path = "../torq-core", version = "0.1.0" }
+torq-sources = { path = "../torq-sources", version = "0.1.0" }
+torq-tui = { path = "../torq-tui", version = "0.1.0" }
