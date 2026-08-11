@@ -3,6 +3,7 @@
 //! were unreachable so the UI can say "X is offline" without failing.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -33,15 +34,20 @@ pub async fn search_all(
     for (s, res) in outcomes {
         match res {
             Ok(rows) => {
-                for r in rows {
-                    by_hash
-                        .entry(r.info_hash.clone())
-                        .and_modify(|e| {
-                            if r.seeders > e.seeders {
-                                *e = r.clone();
+                for mut r in rows {
+                    match by_hash.entry(r.info_hash.clone()) {
+                        Entry::Occupied(mut e) => {
+                            // Keep the row with the most seeders; swap instead
+                            // of cloning so the loser's strings are dropped
+                            // rather than duplicated.
+                            if r.seeders > e.get().seeders {
+                                std::mem::swap(e.get_mut(), &mut r);
                             }
-                        })
-                        .or_insert(r);
+                        }
+                        Entry::Vacant(v) => {
+                            v.insert(r);
+                        }
+                    }
                 }
             }
             Err(_) => offline.push(s.id().to_string()),

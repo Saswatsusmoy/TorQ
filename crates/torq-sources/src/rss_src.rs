@@ -6,7 +6,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::types::{Source, SourceGroup, TorrentResult};
-use crate::util::{build_magnet, canonicalize_hash, fetch_with_failover, parse_size};
+use crate::util::{
+    build_magnet, canonicalize_hash, encode_query_component, fetch_with_failover, parse_size,
+};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,7 +90,7 @@ impl Source for RssSource {
             }
             let qs = params
                 .iter()
-                .map(|(k, v)| format!("{k}={}", urlencoding(v)))
+                .map(|(k, v)| format!("{k}={}", encode_query_component(v)))
                 .collect::<Vec<_>>()
                 .join("&");
             let base = def.search_path.as_deref().unwrap_or(&def.path);
@@ -208,18 +210,6 @@ fn extension(item: &rss::Item, field: &str) -> Option<String> {
 fn extract_hash(magnet: &str) -> Option<&str> {
     let xt = magnet.split("urn:btih:").nth(1)?;
     xt.split('&').next()
-}
-
-fn urlencoding(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            b' ' => "+".into(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 #[cfg(test)]

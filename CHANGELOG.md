@@ -5,6 +5,19 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Performance
+
+- Search wall time cut ~4x (21s → ~5s on live sources): 1337x now fetches its
+  top detail pages in parallel instead of sequentially — that round-trip chain
+  was the dominant cost of every search. Result order and the 4-row cap are
+  unchanged.
+- Host failover remembers the last working host per source (5-minute TTL), so
+  dead mirrors (e.g. yts.mx) are skipped instead of probed on every request.
+- Dedupe keeps the max-seeders row by swap instead of cloning the whole row;
+  the JSON sources map borrowed arrays instead of cloning the serde_json
+  value tree; four per-byte-allocation URL-encoder copies are one shared
+  preallocated implementation.
+
 ### Changed
 
 - Rust edition 2021 → 2024 (MSRV 1.85); nested `if let`s collapsed to

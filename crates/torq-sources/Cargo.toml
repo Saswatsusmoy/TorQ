@@ -21,4 +21,11 @@ rss = "2"
 scraper = "0.21"
 data-encoding = "2"
 
-[dev-dependencies]
+[features]
+# Heap profiling for examples/search_profile.rs (--dhat). Off by default so
+# the normal build has no allocator instrumentation.
+dhat = ["dep:dhat"]
+
+[dependencies.dhat]
+version = "0.3"
+optional = true

@@ -5,7 +5,7 @@ use anyhow::Context;
 use serde_json::Value;
 
 use crate::types::{Source, SourceGroup, TorrentResult};
-use crate::util::{build_magnet, fetch_with_failover};
+use crate::util::{build_magnet, encode_query_component, fetch_with_failover};
 
 const HOSTS: &[&str] = &["https://yts.mx", "https://yts.am", "https://yts.rs"];
 
@@ -40,27 +40,26 @@ impl Source for Yts {
         } else {
             format!(
                 "/api/v2/list_movies.json?limit=50&query_term={}",
-                urlencoding(q)
+                encode_query_component(q)
             )
         };
         let hosts: Vec<String> = HOSTS.iter().map(|s| s.to_string()).collect();
         let body = fetch_with_failover(client, &hosts, &path).await?;
         let json: Value = serde_json::from_str(&body).context("parsing YTS JSON")?;
-        let movies = json
-            .pointer("/data/movies")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let movies = json.pointer("/data/movies").and_then(Value::as_array);
 
         let mut out = Vec::new();
-        for movie in movies {
+        for movie in movies.into_iter().flatten() {
             let base = movie["title_long"]
                 .as_str()
                 .or_else(|| movie["title"].as_str())
                 .unwrap_or("Unknown")
                 .to_string();
             let added = movie["date_uploaded_unix"].as_i64();
-            for t in movie["torrents"].as_array().cloned().unwrap_or_default() {
+            let Some(torrents) = movie["torrents"].as_array() else {
+                continue;
+            };
+            for t in torrents {
                 let Some(hash) = t["hash"].as_str().map(|h| h.to_lowercase()) else {
                     continue;
                 };
@@ -90,18 +89,6 @@ impl Source for Yts {
         }
         Ok(out)
     }
-}
-
-fn urlencoding(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            b' ' => "+".into(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 #[cfg(test)]

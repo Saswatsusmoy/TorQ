@@ -61,8 +61,10 @@ impl Source for SubsPlease {
                 .as_str()
                 .map(|e| format!(" - {e}"))
                 .unwrap_or_default();
-            let downloads = entry["downloads"].as_array().cloned().unwrap_or_default();
-            let Some(dl) = pick_best(&downloads) else {
+            let Some(downloads) = entry["downloads"].as_array() else {
+                continue;
+            };
+            let Some(dl) = pick_best(downloads) else {
                 continue;
             };
             let Some(magnet) = dl["magnet"].as_str() else {

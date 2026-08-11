@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::types::{Source, SourceGroup, TorrentResult};
-use crate::util::{build_magnet, fetch_with_failover};
+use crate::util::{build_magnet, encode_query_component, fetch_with_failover};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,16 +145,13 @@ impl Source for JsonSource {
         let body = fetch_with_failover(client, &def.hosts, &path).await?;
         let json: Value = serde_json::from_str(&body).context("parsing JSON")?;
         let items = match &def.items {
-            Some(p) => get_path(&json, p)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-            None => json.as_array().cloned().unwrap_or_default(),
+            Some(p) => get_path(&json, p).and_then(Value::as_array),
+            None => json.as_array(),
         };
 
-        let mut out = Vec::with_capacity(items.len());
-        for it in items {
-            if let Some(r) = self.map_row(&it, q) {
+        let mut out = Vec::with_capacity(items.map_or(0, |a| a.len()));
+        for it in items.into_iter().flatten() {
+            if let Some(r) = self.map_row(it, q) {
                 out.push(r);
             }
         }
@@ -250,19 +247,7 @@ fn build_query(extra: &[(String, String)], search: Option<(&str, &str)>) -> Stri
 }
 
 fn encode(s: &str) -> String {
-    urlencoding(s)
-}
-
-fn urlencoding(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            b' ' => "+".into(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+    encode_query_component(s)
 }
 
 /// Dotted-path accessor: `get_path(&json, "data.movies")`.
