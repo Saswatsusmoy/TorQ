@@ -14,8 +14,8 @@ serde_json.workspace = true
 toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-librqbit.workspace = true
-librqbit-core = "5"
+librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"] }
+librqbit-core = { version = "5", default-features = false, features = ["sha1-ring"] }
 buffers = { version = "4", package = "librqbit-buffers" }
 axum.workspace = true
 dirs.workspace = true

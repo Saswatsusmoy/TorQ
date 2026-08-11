@@ -18,7 +18,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
-librqbit = "8.1.1"
 axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 dirs = "5"
