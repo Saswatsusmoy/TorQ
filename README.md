@@ -19,10 +19,27 @@ and seed while you do other things. Built in Rust on [librqbit](https://github.c
 
 ## Quickstart
 
+One command, no build, no runtime dependencies:
+
 ```sh
-cargo build --release          # or download a release binary
-./target/release/torq tui      # starts the daemon automatically, opens the TUI
+# macOS or Linux — installs ~/.local/bin/torq
+curl -fsSL https://raw.githubusercontent.com/Saswatsusmoy/TorQ/main/install.sh | sh
+
+# or with Homebrew (macOS)
+brew install saswatsusmoy/torq/torq
+
+# or from source / crates.io
+cargo install torq
 ```
+
+Then:
+
+```sh
+torq tui      # starts the daemon automatically, opens the TUI
+```
+
+Already have the repo checked out? `cargo build --release` gives you
+`target/release/torq` directly.
 
 - Type a query, Enter to search (empty query = browse latest), `d` to add.
 - `1`/`2` switch between search and downloads; `p` pause/resume, `x` remove,

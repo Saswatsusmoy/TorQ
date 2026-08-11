@@ -1,9 +1,10 @@
 [package]
-name = "torq-cli"
-description = "TorQ command line entrypoint"
+name = "torq"
+description = "TorQ: fast torrent finder and downloader (daemon, TUI, CLI)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "torq"

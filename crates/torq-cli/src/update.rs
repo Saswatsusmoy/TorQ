@@ -1,9 +1,11 @@
 //! Self-update: manifest-checked binary replacement with an atomic swap.
 //!
-//! The manifest is a small JSON (`{ "version": "x.y.z", "url": "<binary>" }`)
-//! served from `TORQ_UPDATE_URL` (see README). The new binary is downloaded to
-//! a temp file next to the current one and renamed over it — atomic on the
-//! same filesystem.
+//! The manifest is a small JSON served from `TORQ_UPDATE_URL` (defaults to the
+//! GitHub release asset): `{ "version": "x.y.z", "platforms": { "<target>": "<url>" } }`
+//! keyed by rust target triple. The new binary is downloaded to a temp file
+//! next to the current one and renamed over it — atomic on the same filesystem.
+
+use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -13,13 +15,25 @@ use crate::VERSION;
 #[derive(Deserialize)]
 struct Manifest {
     version: String,
-    url: String,
+    /// Binary URLs keyed by rust target triple.
+    platforms: HashMap<String, String>,
 }
 
 pub fn manifest_url() -> String {
     std::env::var("TORQ_UPDATE_URL").unwrap_or_else(|_| {
-        "https://github.com/torq-app/torq/releases/latest/download/manifest.json".into()
+        "https://github.com/Saswatsusmoy/TorQ/releases/latest/download/manifest.json".into()
     })
+}
+
+/// The rust target triple for the running binary.
+fn current_target() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        (os, arch) => Box::leak(format!("{arch}-unknown-{os}").into_boxed_str()),
+    }
 }
 
 /// Fetch the manifest and report whether a newer version exists.
@@ -41,9 +55,14 @@ pub async fn update() -> Result<String> {
     if manifest.version == VERSION {
         return Ok(format!("already up to date (v{VERSION})"));
     }
+    let url = manifest
+        .platforms
+        .get(current_target())
+        .context("no release binary for this platform")?
+        .clone();
     let exe = std::env::current_exe().context("resolving own binary path")?;
     let tmp = exe.with_extension("new");
-    let bytes = reqwest::get(&manifest.url)
+    let bytes = reqwest::get(&url)
         .await
         .context("downloading update")?
         .error_for_status()
@@ -73,17 +92,23 @@ async fn fetch_manifest() -> Result<Manifest> {
 
 #[cfg(test)]
 mod tests {
-    #[tokio::test]
-    async fn update_swaps_binary_atomically() {
-        let dir = std::env::temp_dir().join(format!("torq-upd-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("torq");
-        std::fs::write(&exe, "old").unwrap();
-        let tmp = exe.with_extension("new");
-        std::fs::write(&tmp, "new-bytes").unwrap();
-        std::fs::rename(&tmp, &exe).unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"new-bytes");
-        assert!(!tmp.exists());
-        std::fs::remove_dir_all(&dir).ok();
+    use super::*;
+
+    #[test]
+    fn manifest_platform_picks_current_target() {
+        let mut platforms = HashMap::new();
+        platforms.insert("aarch64-apple-darwin".into(), "url-a".to_string());
+        platforms.insert("x86_64-unknown-linux-gnu".into(), "url-b".to_string());
+        let manifest = Manifest {
+            version: "9.9.9".into(),
+            platforms,
+        };
+        let url = manifest.platforms.get(current_target()).unwrap();
+        let expected = if current_target() == "aarch64-apple-darwin" {
+            "url-a"
+        } else {
+            "url-b"
+        };
+        assert_eq!(url, expected);
     }
 }
