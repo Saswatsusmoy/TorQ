@@ -85,7 +85,10 @@ impl Engine {
     /// [`AddTorrentResponse`] for the torrent id/handle.
     pub async fn add_magnet(&self, magnet: &str) -> Result<AddTorrentResponse> {
         self.session
-            .add_torrent(AddTorrent::from_url(magnet.to_string()), Some(default_add_options()))
+            .add_torrent(
+                AddTorrent::from_url(magnet.to_string()),
+                Some(default_add_options()),
+            )
             .await
             .context("adding torrent")
     }
@@ -113,7 +116,10 @@ impl Engine {
 
     pub async fn resume(&self, id: TorrentIdOrHash) -> Result<()> {
         let handle = self.api.mgr_handle(id)?;
-        self.session.unpause(&handle).await.context("resuming torrent")
+        self.session
+            .unpause(&handle)
+            .await
+            .context("resuming torrent")
     }
 
     /// Snapshot of every torrent in the session (id, name, hashes, state).

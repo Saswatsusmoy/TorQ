@@ -17,7 +17,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures::stream::{Stream, StreamExt};
 use librqbit::api::TorrentIdOrHash;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::daemon::{Daemon, Event, TorrentView};
@@ -26,19 +26,35 @@ use crate::VERSION;
 #[derive(Clone)]
 pub struct AppState {
     pub daemon: Arc<Daemon>,
+    pub sources: Arc<torq_sources::Registry>,
+    pub client: reqwest::Client,
     auth_token: String,
 }
 
-pub fn router(daemon: Arc<Daemon>, auth_token: String) -> Router {
-    let state = Arc::new(AppState { daemon, auth_token });
+pub fn router(
+    daemon: Arc<Daemon>,
+    auth_token: String,
+    sources: Arc<torq_sources::Registry>,
+    client: reqwest::Client,
+) -> Router {
+    let state = Arc::new(AppState {
+        daemon,
+        sources,
+        client,
+        auth_token,
+    });
     Router::new()
         .route("/health", get(health))
         .route("/torrents", get(list_torrents).post(add_torrent))
         .route("/torrents/{id}", delete(remove_torrent))
         .route("/torrents/{id}/pause", post(pause_torrent))
         .route("/torrents/{id}/resume", post(resume_torrent))
+        .route("/search", get(search))
         .route("/events", get(events))
-        .route_layer(axum::middleware::from_fn_with_state(state.clone(), require_auth))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_auth,
+        ))
         .with_state(state)
 }
 
@@ -85,6 +101,34 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
 
 async fn list_torrents(State(state): State<Arc<AppState>>) -> Json<Vec<TorrentView>> {
     Json(state.daemon.views())
+}
+
+#[derive(Deserialize)]
+struct SearchReq {
+    q: String,
+    /// Comma-separated source ids; empty = all.
+    #[serde(default)]
+    sources: Option<String>,
+}
+
+/// Aggregated search across enabled sources, deduped by infohash. Failing
+/// sources are reported in `offline`, never fatal.
+async fn search(
+    State(state): State<Arc<AppState>>,
+    Query(req): Query<SearchReq>,
+) -> Json<torq_sources::SearchReport> {
+    let only = req
+        .sources
+        .as_deref()
+        .map(|s| s.split(',').map(str::to_string).collect::<Vec<_>>());
+    let report = torq_sources::aggregate::search_all(
+        &state.sources.sources,
+        &state.client,
+        &req.q,
+        only.as_deref(),
+    )
+    .await;
+    Json(report)
 }
 
 #[derive(Deserialize)]

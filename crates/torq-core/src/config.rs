@@ -98,7 +98,7 @@ impl Config {
 
 fn generate_token() -> String {
     let mut bytes = [0u8; 16];
-    let _ = getrandom::getrandom(&mut bytes).expect("OS randomness");
+    getrandom::getrandom(&mut bytes).expect("OS randomness");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

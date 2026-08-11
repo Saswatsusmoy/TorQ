@@ -28,6 +28,8 @@ struct Cli {
 enum Command {
     /// Run the background daemon that owns the torrent engine.
     Daemon,
+    /// Search all sources for a query (daemon must be running).
+    Search { query: String },
     /// Show daemon health and download status.
     Status,
 }
@@ -37,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Daemon => run_daemon().await,
+        Command::Search { query } => run_search(&query).await,
         Command::Status => run_status().await,
     }
 }
@@ -54,7 +57,9 @@ async fn run_daemon() -> anyhow::Result<()> {
     let daemon = Daemon::start(&config, engine).await?;
     watch::spawn_watchers(daemon.clone(), &config.watch_dirs)?;
 
-    let app = api::router(daemon, config.auth_token.clone());
+    let sources = std::sync::Arc::new(torq_sources::Registry::all());
+    let client = torq_sources::types::http_client(config.socks_proxy.as_deref())?;
+    let app = api::router(daemon, config.auth_token.clone(), sources, client);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], config.api_port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -111,6 +116,37 @@ async fn run_status() -> anyhow::Result<()> {
             human_bytes(v.total_bytes),
             v.name
         );
+    }
+    Ok(())
+}
+
+async fn run_search(query: &str) -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", config.api_port);
+    let report: torq_sources::SearchReport = client
+        .get(format!("{base}/search"))
+        .query(&[("q", query)])
+        .bearer_auth(&config.auth_token)
+        .send()
+        .await
+        .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    println!("{} result(s)", report.results.len());
+    for r in report.results.iter().take(25) {
+        println!(
+            "{:>6}  {:>10}  {:24}  {}",
+            r.seeders,
+            human_bytes(r.size_bytes),
+            r.source,
+            r.name
+        );
+    }
+    if !report.offline.is_empty() {
+        println!("offline: {}", report.offline.join(", "));
     }
     Ok(())
 }

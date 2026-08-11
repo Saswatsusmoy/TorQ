@@ -111,7 +111,10 @@ impl Daemon {
         // Metadata for torrents restored by the session (no prior meta file).
         {
             let mut meta = daemon.meta.lock();
-            let resp = daemon.engine.api().api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
+            let resp = daemon
+                .engine
+                .api()
+                .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
             for t in &resp.torrents {
                 meta.entry(t.info_hash.clone()).or_default();
             }
@@ -183,7 +186,11 @@ impl Daemon {
 
     pub async fn pause(&self, id: TorrentIdOrHash) -> Result<()> {
         let (id_num, hash) = self.locate(&id)?;
-        self.meta.lock().get_mut(&hash).expect("meta exists").user_paused = true;
+        self.meta
+            .lock()
+            .get_mut(&hash)
+            .expect("meta exists")
+            .user_paused = true;
         self.save_meta();
         // Best-effort: pausing a still-initializing torrent fails in librqbit;
         // the reconcile tick retries until it takes.
@@ -210,7 +217,9 @@ impl Daemon {
 
     pub async fn remove(&self, id: TorrentIdOrHash, delete_files: bool) -> Result<()> {
         let (id_num, hash) = self.locate(&id)?;
-        self.engine.remove(TorrentIdOrHash::Id(id_num), delete_files).await?;
+        self.engine
+            .remove(TorrentIdOrHash::Id(id_num), delete_files)
+            .await?;
         self.meta.lock().remove(&hash);
         self.save_meta();
         let _ = self.events.send(Event::TorrentRemoved { id: id_num });
@@ -221,7 +230,10 @@ impl Daemon {
     // -- reads ---------------------------------------------------------------
 
     pub fn views(&self) -> Vec<TorrentView> {
-        let resp = self.engine.api().api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
+        let resp = self
+            .engine
+            .api()
+            .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
         let meta = self.meta.lock();
         resp.torrents
             .iter()
@@ -238,7 +250,7 @@ impl Daemon {
 
     /// Resolve a torrent by numeric id or info hash to (id, info_hash).
     fn locate(&self, id: &TorrentIdOrHash) -> Result<(usize, String)> {
-        let handle = self.engine.api().mgr_handle(id.clone()).map_err(|e| {
+        let handle = self.engine.api().mgr_handle(*id).map_err(|e| {
             anyhow::anyhow!(if e.to_string().contains("not found") {
                 "torrent not found"
             } else {
@@ -249,7 +261,10 @@ impl Daemon {
     }
 
     fn active_count(&self) -> usize {
-        self.views().iter().filter(|v| v.status == Status::Downloading).count()
+        self.views()
+            .iter()
+            .filter(|v| v.status == Status::Downloading)
+            .count()
     }
 
     // -- queue promotion ------------------------------------------------------
@@ -260,8 +275,11 @@ impl Daemon {
         if active >= self.max_active {
             return;
         }
-        let mut queued: Vec<TorrentView> =
-            self.views().into_iter().filter(|v| v.status == Status::Queued).collect();
+        let mut queued: Vec<TorrentView> = self
+            .views()
+            .into_iter()
+            .filter(|v| v.status == Status::Queued)
+            .collect();
         queued.sort_by_key(|v| v.added_at);
         for v in queued.into_iter().take(self.max_active - active) {
             if let Err(e) = self.engine.resume(TorrentIdOrHash::Id(v.id)).await {
@@ -284,7 +302,9 @@ impl Daemon {
 
     fn load_meta(&self) {
         let path = self.meta_file();
-        let Ok(raw) = std::fs::read_to_string(&path) else { return };
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return;
+        };
         match serde_json::from_str::<HashMap<String, Meta>>(&raw) {
             Ok(loaded) => {
                 *self.meta.lock() = loaded;
@@ -314,7 +334,10 @@ impl Daemon {
     /// One pass over session state: detect status transitions, broadcast them,
     /// promote completions. Runs every second; does nothing when nothing changed.
     async fn reconcile(&self) {
-        let resp = self.engine.api().api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
+        let resp = self
+            .engine
+            .api()
+            .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
         let mut completed = Vec::new();
         let mut failed = Vec::new();
         let mut updated = Vec::new();
@@ -322,7 +345,9 @@ impl Daemon {
         {
             let mut meta = self.meta.lock();
             for t in &resp.torrents {
-                let Some(stats) = t.stats.as_ref() else { continue };
+                let Some(stats) = t.stats.as_ref() else {
+                    continue;
+                };
                 let Some(id) = t.id else { continue };
                 let entry = meta.entry(t.info_hash.clone()).or_default();
                 let status = derive_status(stats, entry);
@@ -330,7 +355,9 @@ impl Daemon {
                 entry.last_status = Some(status);
                 match (prev, status) {
                     (Some(_), Status::Completed) => completed.push(id),
-                    (Some(_), Status::Failed) => failed.push((id, stats.error.clone().unwrap_or_default())),
+                    (Some(_), Status::Failed) => {
+                        failed.push((id, stats.error.clone().unwrap_or_default()))
+                    }
                     (Some(p), s) if p != s => updated.push((id, status)),
                     _ => {}
                 }
@@ -341,7 +368,10 @@ impl Daemon {
             let _ = self.events.send(Event::TorrentCompleted { id: *id });
         }
         for (id, error) in &failed {
-            let _ = self.events.send(Event::TorrentFailed { id: *id, error: error.clone() });
+            let _ = self.events.send(Event::TorrentFailed {
+                id: *id,
+                error: error.clone(),
+            });
         }
         for (id, _) in &updated {
             let _ = self.events.send(Event::TorrentUpdated { id: *id });
@@ -351,11 +381,16 @@ impl Daemon {
         // torrent mid-initialization fails in librqbit, so retry each tick.
         for t in &resp.torrents {
             let Some(id) = t.id else { continue };
-            let Some(stats) = t.stats.as_ref() else { continue };
+            let Some(stats) = t.stats.as_ref() else {
+                continue;
+            };
             let meta = self.meta.lock().get(&t.info_hash).cloned();
             let Some(meta) = meta else { continue };
             if (meta.user_paused || meta.queued)
-                && !matches!(stats.state, TorrentStatsState::Paused | TorrentStatsState::Error)
+                && !matches!(
+                    stats.state,
+                    TorrentStatsState::Paused | TorrentStatsState::Error
+                )
             {
                 if let Err(e) = self.engine.pause(TorrentIdOrHash::Id(id)).await {
                     debug!(id, "deferred pause not yet possible: {e}");
@@ -416,7 +451,10 @@ fn view_from(details: &TorrentDetailsResponse, meta: &Meta) -> Option<TorrentVie
     Some(TorrentView {
         id,
         info_hash: details.info_hash.clone(),
-        name: details.name.clone().unwrap_or_else(|| details.info_hash.clone()),
+        name: details
+            .name
+            .clone()
+            .unwrap_or_else(|| details.info_hash.clone()),
         status: derive_status(stats, meta),
         progress: if stats.total_bytes > 0 {
             stats.progress_bytes as f32 / stats.total_bytes as f32
@@ -434,7 +472,10 @@ fn view_from(details: &TorrentDetailsResponse, meta: &Meta) -> Option<TorrentVie
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -455,28 +496,59 @@ mod tests {
     }
 
     fn meta(user_paused: bool) -> Meta {
-        Meta { user_paused, queued: false, added_at: 1, last_status: None }
+        Meta {
+            user_paused,
+            queued: false,
+            added_at: 1,
+            last_status: None,
+        }
     }
 
     fn meta_queued() -> Meta {
-        Meta { user_paused: false, queued: true, added_at: 1, last_status: None }
+        Meta {
+            user_paused: false,
+            queued: true,
+            added_at: 1,
+            last_status: None,
+        }
     }
 
     #[test]
     fn status_precedence() {
-        assert_eq!(derive_status(&stats(TorrentStatsState::Live), &meta(false)), Status::Downloading);
-        assert_eq!(derive_status(&stats(TorrentStatsState::Initializing), &meta(false)), Status::Downloading);
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Live), &meta(false)),
+            Status::Downloading
+        );
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Initializing), &meta(false)),
+            Status::Downloading
+        );
         // engine-paused = queued (waiting for a slot)
-        assert_eq!(derive_status(&stats(TorrentStatsState::Paused), &meta(false)), Status::Queued);
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Paused), &meta(false)),
+            Status::Queued
+        );
         // user-paused wins over engine pause
-        assert_eq!(derive_status(&stats(TorrentStatsState::Paused), &meta(true)), Status::Paused);
-        assert_eq!(derive_status(&stats(TorrentStatsState::Live), &meta(true)), Status::Paused);
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Paused), &meta(true)),
+            Status::Paused
+        );
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Live), &meta(true)),
+            Status::Paused
+        );
         // over-cap intent reads as queued even while the engine catches up
-        assert_eq!(derive_status(&stats(TorrentStatsState::Live), &meta_queued()), Status::Queued);
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Live), &meta_queued()),
+            Status::Queued
+        );
         // user pause wins over queued intent
         let mut m = meta_queued();
         m.user_paused = true;
-        assert_eq!(derive_status(&stats(TorrentStatsState::Live), &m), Status::Paused);
+        assert_eq!(
+            derive_status(&stats(TorrentStatsState::Live), &m),
+            Status::Paused
+        );
     }
 
     #[test]
