@@ -32,6 +32,8 @@ enum Command {
     Search { query: String },
     /// Show daemon health and download status.
     Status,
+    /// Terminal UI (starts the daemon automatically if needed).
+    Tui,
 }
 
 #[tokio::main]
@@ -41,6 +43,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Daemon => run_daemon().await,
         Command::Search { query } => run_search(&query).await,
         Command::Status => run_status().await,
+        Command::Tui => {
+            let config = Config::load()?;
+            torq_tui::run(&config).await
+        }
     }
 }
 

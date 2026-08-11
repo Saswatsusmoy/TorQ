@@ -1,0 +1,188 @@
+//! Background client: owns the HTTP conversation with the daemon.
+
+use std::time::Duration;
+
+use futures::StreamExt;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use torq_core::daemon::TorrentView;
+use torq_sources::SearchReport;
+
+/// UI → client requests.
+#[derive(Debug)]
+pub enum Action {
+    Search(String),
+    Add { magnet: String },
+    Pause(usize),
+    Resume(usize),
+    Remove { id: usize, delete_files: bool },
+    Refresh,
+}
+
+/// Client → UI state updates.
+#[derive(Debug)]
+pub enum UiMsg {
+    Torrents(Vec<TorrentView>),
+    Search(anyhow::Result<SearchReport>),
+    Notice(String),
+}
+
+pub struct Client {
+    tx: UnboundedSender<Action>,
+}
+
+impl Client {
+    pub fn spawn(base: String, token: String) -> (Self, UnboundedReceiver<UiMsg>) {
+        let (action_tx, action_rx) = mpsc::unbounded_channel();
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        tokio::spawn(client_loop(base, token, action_rx, msg_tx));
+        (Self { tx: action_tx }, msg_rx)
+    }
+
+    pub fn send(&self, action: Action) {
+        let _ = self.tx.send(action);
+    }
+}
+
+/// Is the daemon answering /health? Any failure (connection refused, timeout,
+/// bad status) means "not reachable" — the caller decides what to do.
+pub async fn health(base: &str, token: &str) -> bool {
+    let Ok(res) = reqwest::Client::new()
+        .get(format!("{base}/health"))
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    res.status().is_success()
+}
+
+/// GET `builder` and decode its JSON body as `T`.
+async fn get_json<T: serde::de::DeserializeOwned>(
+    req: reqwest::RequestBuilder,
+) -> anyhow::Result<T> {
+    let resp = req.send().await?;
+    let resp = resp.error_for_status()?;
+    Ok(resp.json::<T>().await?)
+}
+
+async fn client_loop(
+    base: String,
+    token: String,
+    mut actions: UnboundedReceiver<Action>,
+    msgs: UnboundedSender<UiMsg>,
+) {
+    let http = reqwest::Client::new();
+    let auth = format!("Bearer {token}");
+
+    // SSE pings: any daemon event triggers a fresh torrents snapshot.
+    let (ping_tx, mut ping_rx) = mpsc::channel::<()>(8);
+    tokio::spawn(sse_loop(base.clone(), auth.clone(), ping_tx));
+
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            Some(action) = actions.recv() => match action {
+                Action::Search(q) => {
+                    let req = http
+                        .get(format!("{base}/search"))
+                        .query(&[("q", q)])
+                        .header("authorization", &auth);
+                    let _ = msgs.send(UiMsg::Search(get_json::<SearchReport>(req).await));
+                }
+                Action::Add { magnet } => {
+                    let res = http.post(format!("{base}/torrents"))
+                        .header("authorization", &auth)
+                        .json(&serde_json::json!({"magnet": magnet}))
+                        .send().await;
+                    if let Err(e) = res.and_then(|r| r.error_for_status()) {
+                        let _ = msgs.send(UiMsg::Notice(format!("add failed: {e}")));
+                    }
+                    refresh(&http, &base, &auth, &msgs).await;
+                }
+                Action::Pause(id) => post_torrent(&http, &base, &auth, &msgs, id, "pause").await,
+                Action::Resume(id) => post_torrent(&http, &base, &auth, &msgs, id, "resume").await,
+                Action::Remove { id, delete_files } => {
+                    let res = http.delete(format!("{base}/torrents/{id}"))
+                        .query(&[("delete_files", delete_files)])
+                        .header("authorization", &auth).send().await;
+                    if let Err(e) = res.and_then(|r| r.error_for_status()) {
+                        let _ = msgs.send(UiMsg::Notice(format!("remove failed: {e}")));
+                    }
+                    refresh(&http, &base, &auth, &msgs).await;
+                }
+                Action::Refresh => refresh(&http, &base, &auth, &msgs).await,
+            },
+            _ = interval.tick() => refresh(&http, &base, &auth, &msgs).await,
+            Some(()) = ping_rx.recv() => refresh(&http, &base, &auth, &msgs).await,
+        }
+    }
+}
+
+async fn post_torrent(
+    http: &reqwest::Client,
+    base: &str,
+    auth: &str,
+    msgs: &UnboundedSender<UiMsg>,
+    id: usize,
+    action: &str,
+) {
+    let res = http
+        .post(format!("{base}/torrents/{id}/{action}"))
+        .header("authorization", auth)
+        .send()
+        .await;
+    if let Err(e) = res.and_then(|r| r.error_for_status()) {
+        let _ = msgs.send(UiMsg::Notice(format!("{action} failed: {e}")));
+    }
+    refresh(http, base, auth, msgs).await;
+}
+
+async fn refresh(http: &reqwest::Client, base: &str, auth: &str, msgs: &UnboundedSender<UiMsg>) {
+    let req = http
+        .get(format!("{base}/torrents"))
+        .header("authorization", auth);
+    match get_json::<Vec<TorrentView>>(req).await {
+        Ok(views) => {
+            let _ = msgs.send(UiMsg::Torrents(views));
+        }
+        Err(e) => {
+            let _ = msgs.send(UiMsg::Notice(format!("daemon unreachable: {e}")));
+        }
+    }
+}
+
+/// Long-lived SSE subscription; every daemon event pings the main loop. On
+/// disconnect, reconnect after a short backoff — the daemon may be restarting.
+async fn sse_loop(base: String, auth: String, ping: mpsc::Sender<()>) {
+    loop {
+        let res = reqwest::Client::new()
+            .get(format!("{base}/events"))
+            .header("authorization", &auth)
+            .send()
+            .await;
+        if let Ok(resp) = res {
+            let mut stream = resp.bytes_stream();
+            let mut line = Vec::new();
+            'conn: loop {
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        for &b in &chunk {
+                            if b == b'\n' {
+                                if line.starts_with(b"data:") {
+                                    let _ = ping.send(()).await;
+                                }
+                                line.clear();
+                            } else {
+                                line.push(b);
+                            }
+                        }
+                    }
+                    _ => break 'conn,
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
