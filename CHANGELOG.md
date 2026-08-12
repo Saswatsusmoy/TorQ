@@ -3,6 +3,29 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.6] — 2026-08-12
+
+### UI — full layout revamp (theme unchanged)
+
+- **Three-pane layout** on terminals ≥120 cols: sidebar + results/list +
+  a persistent right-hand **Details** inspector. The full-screen detail
+  swap is gone — selection is inspection, and `Enter` (or `→`) focuses the
+  inspector; `esc` returns. Narrower terminals keep the single-pane view.
+- **Activity strip**: one always-on row above the key hints with aggregate
+  ↓/↑ rates, active count, queue depth (n/cap), and seeding count — no
+  section switch needed to see that something is moving.
+- **Live sidebar badges** on every section: per-category result counts once
+  a search lands, active/seeding counts for the torrent lists (accented).
+- **Progress column** in search results (wide terminals): a result already
+  in the queue shows its live percent (or `seed`) next to Size.
+- `tab` now cycles Sidebar → List → Inspector; `←→`/`hl` move one pane.
+  Inspector and list share the action keys (d/p/x/D/r/P).
+
+### Added
+
+- `GET /config` reports `max_active` (concurrent transfer slots) — backs
+  the strip's queue depth; the TUI refreshes it with every snapshot.
+
 ## [0.1.5] — 2026-08-11
 
 ### Performance

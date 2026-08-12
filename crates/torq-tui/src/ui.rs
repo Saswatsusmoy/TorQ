@@ -39,7 +39,14 @@ const SHEEN_MAX: f32 = 0.9;
 
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Terminals at least this wide get the 3-pane layout (list + inspector);
+/// narrower ones fall back to the single-pane view with a full-screen detail.
+const WIDE_COLS: u16 = 120;
+/// Fixed inspector pane width in the 3-pane layout.
+const INSPECTOR_W: u16 = 38;
+
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.wide = f.area().width >= WIDE_COLS;
     f.render_widget(Block::default().style(Style::new().bg(theme::BG)), f.area());
     match app.view {
         View::Splash => draw_splash(f, app),
@@ -63,16 +70,18 @@ fn draw_browser(f: &mut Frame, app: &mut App) {
     cons.push(Constraint::Length(1)); // gutter between rule and body
     cons.push(Constraint::Min(1));
     if show_footer {
-        cons.push(Constraint::Length(1));
+        cons.push(Constraint::Length(1)); // activity strip
+        cons.push(Constraint::Length(1)); // key hints
     }
     let areas = Layout::vertical(cons).split(f.area());
     let top = areas[0];
     let rule = if show_rule { Some(areas[1]) } else { None };
     let body = if show_rule { areas[3] } else { areas[2] };
-    let footer = if show_footer {
-        Some(if show_rule { areas[4] } else { areas[3] })
+    let (strip, footer) = if show_footer {
+        let n = if show_rule { 4 } else { 3 };
+        (Some(areas[n]), Some(areas[n + 1]))
     } else {
-        None
+        (None, None)
     };
 
     draw_top(f, top, cols, app);
@@ -80,34 +89,340 @@ fn draw_browser(f: &mut Frame, app: &mut App) {
         draw_rule(f, r);
     }
     if app.help {
-        // The help card replaces the body; the footer hides too.
+        // The help card replaces the body; the strip and footer hide too.
         draw_help(f, body, cols);
         return;
     }
-    let rail = rail_width();
+    let rail = rail_width(app);
     // The whole body sits inside the 1-column screen padding:
-    // sidebar, 1 gap, then the content panels.
+    // sidebar, 1 gap, then the content panels; a fixed inspector pane on
+    // wide terminals.
     let padded = Rect {
         x: 1,
         y: body.y,
         width: cols.saturating_sub(2),
         height: body.height,
     };
-    let horiz = Layout::horizontal([
+    let mut horiz = vec![
         Constraint::Length(rail),
         Constraint::Length(1),
         Constraint::Min(0),
-    ])
-    .split(padded);
-    draw_sidebar(f, horiz[0], app);
+    ];
+    if app.wide {
+        horiz.extend([Constraint::Length(1), Constraint::Length(INSPECTOR_W)]);
+    }
+    let areas = Layout::horizontal(horiz).split(padded);
+    draw_sidebar(f, areas[0], app);
     match app.section {
-        Section::Downloads => draw_downloads(f, horiz[2], app, false),
-        Section::Seeding => draw_downloads(f, horiz[2], app, true),
-        _ => draw_search_view(f, horiz[2], app),
+        Section::Downloads => draw_downloads(f, areas[2], app, false),
+        Section::Seeding => draw_downloads(f, areas[2], app, true),
+        _ => draw_search_view(f, areas[2], app),
+    }
+    if app.wide {
+        draw_inspector(f, areas[4], app);
+    }
+    if let Some(st) = strip {
+        draw_strip(f, st, cols, app);
     }
     if let Some(ft) = footer {
         draw_footer(f, ft, cols, app);
     }
+}
+
+/// One-row global activity line: aggregate rates, active/queued/seeding
+/// counts. Always visible so transfer state never requires a section switch.
+fn draw_strip(f: &mut Frame, area: Rect, cols: u16, app: &App) {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let alt = Style::new().fg(theme::ALT);
+    let w = cols.saturating_sub(2) as usize;
+
+    let speed = |bps: f32| human_speed(Some(bps));
+    let dl = app
+        .aggregate_dl_bps()
+        .map(speed)
+        .unwrap_or_else(|| "-".into());
+    let ul = app
+        .aggregate_ul_bps()
+        .map(speed)
+        .unwrap_or_else(|| "-".into());
+    let active = app.active_count();
+    let queued = app.queued_count();
+    let seeding = app.seeding_count();
+    let busy = dl != "-" || ul != "-" || active > 0 || queued > 0;
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if !busy && seeding == 0 {
+        spans.push(Span::styled(
+            format!("{} idle — all quiet", icon::DOT),
+            dim,
+        ));
+    } else {
+        let rate = |icon: &'static str, v: String| -> Vec<Span<'static>> {
+            vec![
+                Span::styled(icon, alt),
+                Span::styled(format!(" {v}"), dim),
+            ]
+        };
+        spans.extend(rate(icon::DOWN, dl));
+        spans.extend([Span::styled("   ", dim), Span::styled(icon::UP, alt)]);
+        spans.push(Span::styled(format!(" {ul}"), dim));
+        spans.push(Span::styled("  ·  ", dim));
+        spans.push(Span::styled(
+            format!("{active} active"),
+            if active > 0 {
+                Style::new().fg(theme::ACCENT)
+            } else {
+                dim
+            },
+        ));
+        spans.push(Span::styled("  ·  ", dim));
+        spans.push(Span::styled(
+            format!("{queued}/{} queue", app.max_active),
+            if queued > 0 {
+                Style::new().fg(theme::WARN)
+            } else {
+                dim
+            },
+        ));
+        if seeding > 0 {
+            spans.push(Span::styled("  ·  ", dim));
+            spans.push(Span::styled(
+                format!("{seeding} seeding"),
+                Style::new().fg(theme::GOOD).add_modifier(Modifier::DIM),
+            ));
+        }
+    }
+    let line = truncate_spans(spans, w);
+    f.render_widget(
+        Paragraph::new(Line::from(line)).style(Style::new().bg(theme::BG)),
+        Rect {
+            x: 1,
+            y: area.y,
+            width: w as u16,
+            height: 1,
+        },
+    );
+}
+
+/// Persistent right-hand detail pane: the selected result or torrent with
+/// its live transfer state and the action keys.
+fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
+    let focused = app.region == Region::Inspector;
+    let inner_w = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if app.is_search_section() {
+        inspector_result_lines(app, &mut lines, inner_w);
+    } else {
+        inspector_torrent_lines(app, &mut lines, inner_w);
+    }
+    draw_panel(f, area, "details", None, focused, lines);
+}
+
+fn inspector_result_lines(app: &App, out: &mut Vec<Line<'static>>, inner_w: usize) {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let alt = Style::new().fg(theme::ALT).add_modifier(Modifier::DIM);
+    let value_w = inner_w.saturating_sub(10);
+    let row = |label: &str, value: Vec<Span<'static>>| -> Line<'static> {
+        let mut spans = vec![Span::styled(pad_right(label, 9), dim)];
+        spans.extend(value);
+        Line::from(fit(spans, inner_w))
+    };
+
+    let visible = app.visible_results();
+    let Some(r) = visible.get(app.cursor) else {
+        out.push(Line::from(vec![Span::styled("Nothing selected.", dim)]));
+        return;
+    };
+    let (tag, tag_color) = theme::source_style(&r.source);
+    let mut name_spans = vec![Span::styled(
+        cut(&clean_text(&r.name), inner_w.saturating_sub(2 + 4)),
+        Style::new().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+    )];
+    name_spans.push(Span::raw("  "));
+    name_spans.push(Span::styled(
+        tag,
+        Style::new().fg(tag_color).add_modifier(Modifier::BOLD),
+    ));
+    out.push(Line::from(fit(name_spans, inner_w)));
+    out.push(Line::from(vec![Span::styled(
+        "─".repeat(inner_w),
+        Style::new().fg(theme::RULE),
+    )]));
+    out.push(Line::from(vec![Span::raw(" ")]));
+
+    out.push(row(
+        "Size",
+        vec![if r.size_bytes > 0 {
+            Span::styled(human_bytes(r.size_bytes), Style::new().fg(theme::TEXT))
+        } else {
+            Span::styled("unknown", dim)
+        }],
+    ));
+    let health = if r.seeders > 0 || r.leechers > 0 {
+        vec![
+            Span::styled(
+                crate::format::count(r.seeders),
+                if r.seeders > 0 {
+                    Style::new().fg(theme::GOOD).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme::TEXT)
+                },
+            ),
+            Span::styled(
+                format!(" seeders {} {} leechers", icon::DOT, r.leechers),
+                dim,
+            ),
+        ]
+    } else {
+        vec![Span::styled("unknown", dim)]
+    };
+    out.push(row("Health", health));
+    if let Some(n) = r.num_files {
+        out.push(row("Files", vec![Span::styled(n.to_string(), dim)]));
+    }
+    // The queue's own added_at supersedes the search-time one when present.
+    if app.view_for_hash(&r.info_hash).is_none() && r.added.is_some_and(|a| a > 0) {
+        out.push(row(
+            "Added",
+            vec![Span::styled(relative_time(r.added.unwrap_or(0)), dim)],
+        ));
+    }
+
+    // Live transfer state when this result is already in the queue.
+    if let Some(t) = app.view_for_hash(&r.info_hash) {
+        out.push(Line::from(vec![Span::raw(" ")]));
+        inspector_status_block(t, out, inner_w, value_w);
+    }
+
+    out.push(Line::from(vec![Span::raw(" ")]));
+    out.push(row(
+        "Hash",
+        vec![Span::styled(cut(&strip_control(&r.info_hash), value_w), alt)],
+    ));
+    out.push(row(
+        "Magnet",
+        vec![Span::styled(cut(&strip_control(&r.magnet), value_w), alt)],
+    ));
+
+    out.push(Line::from(vec![Span::raw(" ")]));
+    let actions = if app.view_for_hash(&r.info_hash).is_some() {
+        vec![("P", "Play"), ("p", "Pause"), ("x", "Remove")]
+    } else {
+        vec![("d", "Download")]
+    };
+    out.push(action_line(&actions, inner_w));
+}
+
+fn inspector_torrent_lines(app: &App, out: &mut Vec<Line<'static>>, inner_w: usize) {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let value_w = inner_w.saturating_sub(10);
+    let row = |label: &str, value: Vec<Span<'static>>| -> Line<'static> {
+        let mut spans = vec![Span::styled(pad_right(label, 9), dim)];
+        spans.extend(value);
+        Line::from(fit(spans, inner_w))
+    };
+
+    let visible = app.visible_torrents();
+    let Some(t) = visible.get(app.dl_cursor) else {
+        out.push(Line::from(vec![Span::styled("Nothing selected.", dim)]));
+        return;
+    };
+    out.push(Line::from(fit(
+        vec![Span::styled(
+            cut(&clean_text(&t.name), inner_w),
+            Style::new().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+        )],
+        inner_w,
+    )));
+    out.push(Line::from(vec![Span::styled(
+        "─".repeat(inner_w),
+        Style::new().fg(theme::RULE),
+    )]));
+    out.push(Line::from(vec![Span::raw(" ")]));
+
+    inspector_status_block(t, out, inner_w, value_w);
+    if let Some(err) = &t.error {
+        out.push(row(
+            "Error",
+            vec![Span::styled(
+                cut(&clean_text(err), value_w),
+                Style::new().fg(theme::WARN),
+            )],
+        ));
+    }
+    out.push(Line::from(vec![Span::raw(" ")]));
+    out.push(action_line(
+        &[("p", "Pause"), ("x", "Remove"), ("D", "Delete"), ("P", "Play")],
+        inner_w,
+    ));
+}
+
+/// Status label, progress bar + pct, and rates/peers for a torrent view.
+fn inspector_status_block(
+    t: &TorrentView,
+    out: &mut Vec<Line<'static>>,
+    inner_w: usize,
+    value_w: usize,
+) {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let row = |label: &str, value: Vec<Span<'static>>| -> Line<'static> {
+        let mut spans = vec![Span::styled(pad_right(label, 9), dim)];
+        spans.extend(value);
+        Line::from(fit(spans, inner_w))
+    };
+
+    let color = status_color(t);
+    out.push(row(
+        "Status",
+        vec![Span::styled(
+            t.status_label(),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        )],
+    ));
+    if t.status != Status::Completed {
+        let bar_w = (inner_w.saturating_sub(6)).max(8) as u16;
+        let animate = t.status == Status::Downloading;
+        let mut spans = vec![Span::raw(" ".repeat(10))];
+        spans.extend(progress_bar(t.progress, bar_w, color, animate, 0));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{:.0}%", (t.progress * 100.0).round()),
+            Style::new().fg(theme::TEXT),
+        ));
+        out.push(Line::from(fit(spans, inner_w)));
+    }
+    let dl = t.download_mbps.map(|m| m * 1024.0 * 1024.0);
+    let ul = t.upload_mbps.map(|m| m * 1024.0 * 1024.0);
+    out.push(row(
+        "Rates",
+        vec![
+            Span::styled(format!("↓{}", human_speed(dl)), dim),
+            Span::styled(format!(" ↑{}", human_speed(ul)), dim),
+            Span::styled(format!("  {}{}", icon::PEER, t.peers), dim),
+        ],
+    ));
+    out.push(row(
+        "Added",
+        vec![Span::styled(relative_time(t.added_at), dim)],
+    ));
+    let _ = value_w;
+}
+
+/// One-line action hints with accent-colored keys.
+fn action_line(actions: &[(&'static str, &'static str)], inner_w: usize) -> Line<'static> {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (key, label)) in actions.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" ", dim));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!(" {label}"), Style::new().fg(theme::TEXT)));
+    }
+    Line::from(fit(spans, inner_w))
 }
 
 /// Logo (or wordmark fallback) on the left; notice / daemon base on the right.
@@ -183,16 +498,29 @@ fn draw_rule(f: &mut Frame, area: Rect) {
 
 // Sidebar rail
 
-fn rail_width() -> u16 {
+fn rail_width(app: &App) -> u16 {
     let max = Section::ALL
         .iter()
         .map(|s| {
-            let badge = matches!(s, Section::Downloads | Section::Seeding);
-            str_w(s.label()) + if badge { 5 } else { 0 }
+            let badge = app
+                .count_for_section(*s)
+                .map(|n| format!(" ({n})").len())
+                .unwrap_or(0);
+            str_w(s.label()) + badge
         })
         .max()
         .unwrap_or(0);
     GUTTER + max as u16
+}
+
+/// Badge accent per section: downloads/seeding are live status (green/blue),
+/// search sections are neutral counts.
+fn badge_style(s: Section, dim: Style) -> Style {
+    match s {
+        Section::Downloads => Style::new().fg(theme::ACCENT).add_modifier(Modifier::DIM),
+        Section::Seeding => Style::new().fg(theme::GOOD).add_modifier(Modifier::DIM),
+        _ => dim,
+    }
 }
 
 fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
@@ -204,11 +532,7 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
         }
         for s in *group {
             let selected = *s == app.section;
-            let badge = match s {
-                Section::Downloads => app.active_count(),
-                Section::Seeding => app.seeding_count(),
-                _ => 0,
-            };
+            let badge = app.count_for_section(*s);
             let mut spans: Vec<Span<'static>> = Vec::new();
             if selected {
                 let bar = Style::new().fg(if focused { theme::BRIGHT } else { theme::RULE });
@@ -227,10 +551,10 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
                 label_style = label_style.add_modifier(Modifier::DIM);
             }
             spans.push(Span::styled(s.label(), label_style));
-            if badge > 0 {
+            if badge.is_some_and(|n| n > 0) {
                 spans.push(Span::styled(
-                    format!(" ({badge})"),
-                    Style::new().add_modifier(Modifier::DIM),
+                    format!(" ({})", badge.expect("checked")),
+                    badge_style(*s, label_style),
                 ));
             }
             lines.push(Line::from(fit(spans, area.width as usize)));
@@ -312,12 +636,17 @@ fn draw_results(f: &mut Frame, area: Rect, app: &App) {
             // Header, separator, then rows — the table grid.
             let list_h = inner_h.saturating_sub(3).max(1);
             let start = window_start(app.cursor, results.len(), list_h);
-            let name_w = inner_w.saturating_sub(1 + 10 + 1 + 7 + 1 + 5 + 1 + 5);
-            lines.push(Line::from(fit(header_spans(name_w, app.sort), inner_w)));
-            lines.push(Line::from(fit(table_separator(name_w), inner_w)));
+            let pct = app.wide;
+            let name_w = if pct {
+                inner_w.saturating_sub(1 + 10 + 1 + 5 + 1 + 7 + 1 + 5 + 1 + 5)
+            } else {
+                inner_w.saturating_sub(1 + 10 + 1 + 7 + 1 + 5 + 1 + 5)
+            };
+            lines.push(Line::from(fit(header_spans(name_w, app.sort, pct), inner_w)));
+            lines.push(Line::from(fit(table_separator(name_w, pct), inner_w)));
             for (i, r) in results.iter().enumerate().skip(start).take(list_h) {
                 let here = i == app.cursor && focused;
-                lines.push(Line::from(fit(result_row(r, name_w, here), inner_w)));
+                lines.push(Line::from(fit(result_row(r, name_w, here, app, pct), inner_w)));
             }
         }
     }
@@ -387,7 +716,7 @@ fn results_status(app: &App, results_len: usize, browsing: bool) -> Vec<Span<'st
 }
 
 /// Table header row with `│` column separators: `│ Name │ Size │ Seeds │ Lch │ Src │`.
-fn header_spans(name_w: usize, sort: Sort) -> Vec<Span<'static>> {
+fn header_spans(name_w: usize, sort: Sort, pct: bool) -> Vec<Span<'static>> {
     let st = Style::new().add_modifier(Modifier::BOLD | Modifier::DIM);
     let grid = Style::new().fg(theme::RULE);
     let mut out = vec![Span::styled(format!("{:<name_w$}", "Name"), st)];
@@ -397,6 +726,11 @@ fn header_spans(name_w: usize, sort: Sort) -> Vec<Span<'static>> {
         st,
     ));
     out.push(Span::styled("│", grid));
+    if pct {
+        // Progress column: blank for results that aren't in the queue.
+        out.push(Span::styled(format!(" {:>4}", "Pct"), st));
+        out.push(Span::styled("│", grid));
+    }
     out.push(Span::styled(
         format!(" {:>6}", sort_mark(sort, SortField::Seeders, "Seeds")),
         st,
@@ -412,20 +746,13 @@ fn header_spans(name_w: usize, sort: Sort) -> Vec<Span<'static>> {
 }
 
 /// Horizontal rule between the header and rows, aligned to the column grid.
-fn table_separator(name_w: usize) -> Vec<Span<'static>> {
+fn table_separator(name_w: usize, pct: bool) -> Vec<Span<'static>> {
     let grid = Style::new().fg(theme::RULE);
-    let line = format!(
-        "{}{}{}{}{}{}{}{}{}",
-        "─".repeat(name_w),
-        "┼",
-        "─".repeat(10),
-        "┼",
-        "─".repeat(7),
-        "┼",
-        "─".repeat(5),
-        "┼",
-        "─".repeat(5)
-    );
+    let mut line = format!("{}┼{}", "─".repeat(name_w), "─".repeat(10));
+    if pct {
+        line.push_str(&format!("┼{}", "─".repeat(5)));
+    }
+    line.push_str(&format!("┼{}┼{}┼{}", "─".repeat(7), "─".repeat(5), "─".repeat(5)));
     vec![Span::styled(line, grid)]
 }
 
@@ -439,7 +766,22 @@ fn sort_mark(sort: Sort, field: SortField, label: &str) -> String {
     format!("{label}{arrow}")
 }
 
-fn result_row(r: &TorrentResult, name_w: usize, here: bool) -> Vec<Span<'static>> {
+/// Progress text for a result's row: live percent when the result is in the
+/// queue, `seed` when it has finished, blank otherwise.
+fn row_progress(r: &TorrentResult, app: &App) -> Option<(String, Style)> {
+    let t = app.view_for_hash(&r.info_hash)?;
+    if t.status == Status::Completed {
+        return Some((
+            "seed".into(),
+            Style::new().fg(theme::GOOD).add_modifier(Modifier::DIM),
+        ));
+    }
+    let pct = format!("{:.0}%", (t.progress * 100.0).round());
+    let style = Style::new().fg(status_color(t)).add_modifier(Modifier::DIM);
+    Some((pct, style))
+}
+
+fn result_row(r: &TorrentResult, name_w: usize, here: bool, app: &App, pct: bool) -> Vec<Span<'static>> {
     let (tag, tag_color) = theme::source_style(&r.source);
     let dim = Style::new().add_modifier(Modifier::DIM);
     let bold = Style::new().add_modifier(Modifier::BOLD);
@@ -474,6 +816,23 @@ fn result_row(r: &TorrentResult, name_w: usize, here: bool) -> Vec<Span<'static>
         if here { bold } else { dim },
     ));
     out.push(Span::styled("│", grid));
+    // Live progress when this result is in the queue (wide terminals only).
+    if pct {
+        let p = row_progress(r, app);
+        let pct_style = if here {
+            p.as_ref()
+                .map(|(_, st)| *st)
+                .unwrap_or(dim)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            p.as_ref().map(|(_, st)| *st).unwrap_or(dim)
+        };
+        out.push(Span::styled(
+            format!(" {:>4}", p.as_ref().map(|(s, _)| s.as_str()).unwrap_or("")),
+            pct_style,
+        ));
+        out.push(Span::styled("│", grid));
+    }
     // Seeders: green when alive.
     let seeds = crate::format::count(r.seeders);
     let seed_style = if here {
@@ -888,7 +1247,7 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ],
             SearchMode::List => vec![
                 ("↑↓←→", "Move"),
-                ("↵", "Details"),
+                ("↵", if app.wide { "Inspect" } else { "Details" }),
                 ("d", "Download"),
                 ("s", "Sort"),
                 ("/", "Search"),
@@ -1455,68 +1814,37 @@ mod render_tests {
         assert_eq!(row(&buf, 1, 1, 16), " ▀█▀ █▀█ █▀█ █▀█");
         assert_eq!(row(&buf, 3, 1, 78), "─".repeat(78));
 
-        // Sidebar rail (16 wide): selected "All" gets the bar; groups split.
-        assert_eq!(row(&buf, 5, 1, 16), "▌ All           ");
-        assert_eq!(row(&buf, 6, 1, 16), "  Games         ");
-        assert_eq!(row(&buf, 7, 1, 16), "  Movies        ");
-        assert_eq!(row(&buf, 8, 1, 16), "  TV            ");
-        assert_eq!(row(&buf, 9, 1, 16), "  Anime         ");
-        assert_eq!(row(&buf, 10, 1, 16), "                ");
-        assert_eq!(row(&buf, 11, 1, 16), "  Downloads     ");
-        assert_eq!(row(&buf, 12, 1, 16), "  Seeding       ");
+        // Sidebar rail (15 wide) with live per-section result badges.
+        assert_eq!(row(&buf, 5, 1, 15), "▌ All (2)      ");
+        assert_eq!(row(&buf, 6, 1, 15), "  Games        ");
+        assert_eq!(row(&buf, 7, 1, 15), "  Movies (1)   ");
+        assert_eq!(row(&buf, 8, 1, 15), "  TV (1)       ");
+        assert_eq!(row(&buf, 9, 1, 15), "  Anime        ");
+        assert_eq!(row(&buf, 11, 1, 15), "  Downloads    ");
+        assert_eq!(row(&buf, 12, 1, 15), "  Seeding      ");
 
-        // Content panel is 61 wide at x=18..78.
-        assert_eq!(
-            row(&buf, 5, 18, 78),
-            "╭─ Search ──────────────────────────────────────────────────╮"
-        );
-        assert_eq!(
-            row(&buf, 6, 18, 78),
-            "│ ❯ Search or paste a magnet link…                          │"
-        );
-        assert_eq!(
-            row(&buf, 7, 18, 78),
-            "╰───────────────────────────────────────────────────────────╯"
-        );
-        assert_eq!(
-            row(&buf, 9, 18, 78),
-            "╭─ Latest (2) ──────────────────────────────────────────────╮"
-        );
-        assert_eq!(
-            row(&buf, 10, 18, 78),
-            "│ newest across all sources                                 │"
-        );
+        // Content panel is 62 wide at x=17..78.
+        assert_eq!(row(&buf, 5, 17, 78), "╭─ Search ───────────────────────────────────────────────────╮");
+        assert_eq!(row(&buf, 6, 17, 78), "│ ❯ Search or paste a magnet link…                           │");
+        assert_eq!(row(&buf, 7, 17, 78), "╰────────────────────────────────────────────────────────────╯");
+        assert_eq!(row(&buf, 9, 17, 78), "╭─ Latest (2) ───────────────────────────────────────────────╮");
+        assert_eq!(row(&buf, 10, 17, 78), "│ newest across all sources                                  │");
         // Bordered table: header, separator, rows with `│` column dividers.
-        assert_eq!(
-            row(&buf, 11, 18, 78),
-            "│ Name                      │      Size│  Seeds│  Lch│  Src │"
-        );
-        assert_eq!(
-            row(&buf, 12, 18, 78),
-            "│ ──────────────────────────┼──────────┼───────┼─────┼───── │"
-        );
+        assert_eq!(row(&buf, 11, 17, 78), "│ Name                       │      Size│  Seeds│  Lch│  Src │");
+        assert_eq!(row(&buf, 12, 17, 78), "│ ───────────────────────────┼──────────┼───────┼─────┼───── │");
         // Selected row carries the ❯ pointer; numbers right-aligned per cell.
-        assert_eq!(
-            row(&buf, 13, 18, 78),
-            "│ ❯ Dune: Part Two (2024)   │   7.28 GB│   1240│   88│  YTS │"
-        );
-        assert_eq!(
-            row(&buf, 14, 18, 78),
-            "│   Oppenheimer (2023)      │   1.83 GB│    540│   31│ EZTV │"
-        );
-        assert_eq!(
-            row(&buf, 22, 18, 78),
-            "╰───────────────────────────────────────────────────────────╯"
-        );
+        assert_eq!(row(&buf, 13, 17, 78), "│ ❯ Dune: Part Two (2024)    │   7.28 GB│   1240│   88│  YTS │");
+        assert_eq!(row(&buf, 14, 17, 78), "│   Oppenheimer (2023)       │   1.83 GB│    540│   31│ EZTV │");
+        assert_eq!(row(&buf, 21, 17, 78), "╰────────────────────────────────────────────────────────────╯");
 
+        // Activity strip between the body and the footer.
+        assert_eq!(row(&buf, 22, 1, 78).trim_end(), "· idle — all quiet");
         // Footer hints for the search list mode.
-        // Footer sits inside the 1-col padding (x=1..78).
         assert_eq!(
             row(&buf, 23, 1, 78).trim_end(),
             "↑↓←→ Move   ↵ Details   d Download   s Sort   / Search   tab Switch   ? Keys"
         );
     }
-
     #[test]
     fn downloads_show_icon_progress_bar_and_stats() {
         let mut app = App::new("http://127.0.0.1:8765".into());
@@ -1526,28 +1854,24 @@ mod render_tests {
         app.torrents = vec![view(1, Status::Downloading, 0.64, Some(7.7), None)];
         let buf = frame(&mut app, 80, 24);
 
-        assert_eq!(
-            row(&buf, 5, 18, 78),
-            "╭─ Downloads (1) ───────────────────────────────────────────╮"
-        );
+        assert_eq!(row(&buf, 5, 17, 78), "╭─ Downloads (1) ────────────────────────────────────────────╮");
         // Name row: pointer + down icon + name + right-aligned size.
-        assert_eq!(
-            row(&buf, 6, 18, 78),
-            "│ ❯ ↓ Torrent 1    7.28 GB                                  │"
-        );
-        // Progress row: 14 filled cells, 8 track cells, then right stats.
-        assert_eq!(
-            row(&buf, 7, 18, 78),
-            "│     ██████████████░░░░░░░░  64%  7.7 MB/s  •41            │"
-        );
+        assert_eq!(row(&buf, 6, 17, 78), "│ ❯ ↓ Torrent 1    7.28 GB                                   │");
+        // Progress row: filled cells, track cells, then right stats.
+        assert_eq!(row(&buf, 7, 17, 78), "│     ███████████████░░░░░░░░  64%  7.7 MB/s  •41            │");
         // Sidebar badge counts the active item; footer shows the delete hint.
-        assert_eq!(row(&buf, 11, 1, 16), "▌ Downloads (1) ");
+        assert_eq!(row(&buf, 11, 1, 15), "▌ Downloads (1)");
+        assert_eq!(row(&buf, 21, 17, 78), "╰────────────────────────────────────────────────────────────╯");
+        // Strip aggregates the live rate and queue state.
+        assert_eq!(
+            row(&buf, 22, 1, 78).trim_end(),
+            "↓ 7.7 MB/s   ↑ -  ·  1 active  ·  0/3 queue"
+        );
         assert_eq!(
             row(&buf, 23, 1, 78).trim_end(),
             "↑↓←→ Move   p Pause   x Remove   D Delete   P Play   tab Switch   ? Keys"
         );
     }
-
     #[test]
     fn seeding_section_lists_completed_with_check() {
         let mut app = App::new("http://127.0.0.1:8765".into());
@@ -1557,20 +1881,19 @@ mod render_tests {
         app.torrents = vec![view(9, Status::Completed, 1.0, None, Some(2.5))];
         let buf = frame(&mut app, 80, 24);
 
+        assert_eq!(row(&buf, 5, 17, 78), "╭─ Seeding (1) ──────────────────────────────────────────────╮");
+        assert_eq!(row(&buf, 6, 17, 78), "│ ❯ ✓ Torrent 9    7.28 GB   ↑ 2.5 MB/s    •41               │");
+        assert_eq!(row(&buf, 12, 1, 15), "▌ Seeding (1)  ");
+        // Strip shows the upload rate and the seeding count.
         assert_eq!(
-            row(&buf, 5, 18, 78),
-            "╭─ Seeding (1) ─────────────────────────────────────────────╮"
-        );
-        assert_eq!(
-            row(&buf, 6, 18, 78),
-            "│ ❯ ✓ Torrent 9    7.28 GB   ↑ 2.5 MB/s    •41              │"
+            row(&buf, 22, 1, 78).trim_end(),
+            "↓ -   ↑ 2.5 MB/s  ·  0 active  ·  0/3 queue  ·  1 seeding"
         );
         assert_eq!(
             row(&buf, 23, 1, 78).trim_end(),
             "↑↓←→ Move   p Pause   x Remove   P Play   tab Switch   ? Keys"
         );
     }
-
     #[test]
     fn detail_view_pins_fields_and_actions() {
         let mut app = App::new("http://127.0.0.1:8765".into());
@@ -1587,53 +1910,24 @@ mod render_tests {
         app.detail = app.results.first().cloned();
         let buf = frame(&mut app, 80, 24);
 
-        assert_eq!(
-            row(&buf, 9, 18, 78),
-            "╭─ Details ─────────────────────────────────────────────────╮"
-        );
-        assert_eq!(
-            row(&buf, 10, 18, 78),
-            "│ Dune: Part Two (2024)  YTS                                │"
-        );
-        assert_eq!(
-            row(&buf, 11, 18, 78),
-            "│ ───────────────────────────────────────────────────────── │"
-        );
-        assert_eq!(
-            row(&buf, 12, 18, 78),
-            "│                                                           │"
-        );
-        // Labels left-aligned in a 9-wide box; values follow.
-        assert_eq!(
-            row(&buf, 13, 18, 78),
-            "│ Size     7.28 GB                                          │"
-        );
-        assert_eq!(
-            row(&buf, 14, 18, 78),
-            "│ Health   1240 seeders · 88 leechers                       │"
-        );
-        assert_eq!(
-            row(&buf, 15, 18, 78),
-            "│ Files    3                                                │"
-        );
-        assert_eq!(
-            row(&buf, 17, 18, 78),
-            "│ Hash     hash-Dune: Part Two (2024)                       │"
-        );
-        assert_eq!(
-            row(&buf, 18, 18, 78),
-            "│ Magnet   magnet:?xt=urn:btih:Dune: Part Two (2024)        │"
-        );
-        assert_eq!(
-            row(&buf, 20, 18, 78),
-            "│ d Download  ·  esc back                                   │"
-        );
+        assert_eq!(row(&buf, 9, 17, 78), "╭─ Details ──────────────────────────────────────────────────╮");
+        assert_eq!(row(&buf, 10, 17, 78), "│ Dune: Part Two (2024)  YTS                                 │");
+        assert_eq!(row(&buf, 11, 17, 78), "│ ────────────────────────────────────────────────────────── │");
+        assert_eq!(row(&buf, 12, 17, 78), "│                                                            │");
+        assert_eq!(row(&buf, 13, 17, 78), "│ Size     7.28 GB                                           │");
+        assert_eq!(row(&buf, 14, 17, 78), "│ Health   1240 seeders · 88 leechers                        │");
+        assert_eq!(row(&buf, 15, 17, 78), "│ Files    3                                                 │");
+        assert_eq!(row(&buf, 17, 17, 78), "│ Hash     hash-Dune: Part Two (2024)                        │");
+        assert_eq!(row(&buf, 18, 17, 78), "│ Magnet   magnet:?xt=urn:btih:Dune: Part Two (2024)         │");
+        assert_eq!(row(&buf, 20, 17, 78), "│ d Download  ·  esc back                                    │");
+        assert_eq!(row(&buf, 21, 17, 78), "╰────────────────────────────────────────────────────────────╯");
+        // Strip stays on even in the detail view.
+        assert_eq!(row(&buf, 22, 1, 78).trim_end(), "· idle — all quiet");
         assert_eq!(
             row(&buf, 23, 1, 78).trim_end(),
             "d Download   esc Back   tab Switch   ? Keys"
         );
     }
-
     #[test]
     fn help_replaces_body_with_two_column_card() {
         let mut app = App::new("http://127.0.0.1:8765".into());
@@ -1684,12 +1978,12 @@ mod render_tests {
         // Canvas is everforest bg_dim everywhere.
         assert_eq!(bg(0, 0), Some(C::Rgb(0x23, 0x2a, 0x2e)));
         // Unfocused panel border is grey0; the rule under the logo too.
-        assert_eq!(fg(18, 5), Some(C::Rgb(0x7a, 0x84, 0x78)));
+        assert_eq!(fg(17, 5), Some(C::Rgb(0x7a, 0x84, 0x78)));
         assert_eq!(fg(1, 3), Some(C::Rgb(0x7a, 0x84, 0x78)));
-        // Selected row pointer + name are the everforest green.
-        assert_eq!(fg(20, 13), Some(C::Rgb(0xa7, 0xc0, 0x80)));
-        // Healthy seed count is aqua (inner content starts at x=20).
-        assert_eq!(fg(61, 13), Some(C::Rgb(0x83, 0xc0, 0x92)));
+        // Selected row pointer is the everforest green.
+        assert_eq!(fg(19, 13), Some(C::Rgb(0xa7, 0xc0, 0x80)));
+        // Healthy seed count is aqua.
+        assert_eq!(fg(60, 13), Some(C::Rgb(0x83, 0xc0, 0x92)));
         // Footer key hints are grey1.
         assert_eq!(fg(1, 23), Some(C::Rgb(0x85, 0x92, 0x89)));
         // Table grid lines are grey0.
@@ -1712,4 +2006,65 @@ mod render_tests {
         assert_eq!(row(&buf, 3, 1, 38), " ".repeat(38));
         assert!(row(&buf, 11, 1, 39).starts_with("↑↓←→ Move"));
     }
+    #[test]
+    fn wide_layout_splits_list_inspector_and_strip() {
+        let mut app = App::new("http://127.0.0.1:8765".into());
+        app.view = View::Browser;
+        app.region = Region::Content;
+        app.max_active = 3;
+        let mut r1 = result("Dune: Part Two (2024)", "yts", 7_820_000_000, 1240, 88);
+        r1.info_hash = "ih-1".into();
+        app.results = vec![
+            r1,
+            result("Oppenheimer (2023)", "eztv", 1_960_000_000, 540, 31),
+        ];
+        app.torrents = vec![view(1, Status::Downloading, 0.64, Some(7.7), Some(0.5))];
+        let buf = frame(&mut app, 120, 30);
+
+        // 3-pane mode is active.
+        assert!(app.wide);
+        // The table gains a Pct column showing live download state.
+        assert_eq!(row(&buf, 11, 17, 79), "│ Name                  │      Size│  Pct│  Seeds│  Lch│  Src │");
+        assert_eq!(row(&buf, 12, 17, 79), "│ ──────────────────────┼──────────┼─────┼───────┼─────┼───── │");
+        assert_eq!(row(&buf, 13, 17, 79), "│ ❯ Dune: Part Two (2024│   7.28 GB│  64%│   1240│   88│  YTS │");
+        assert_eq!(row(&buf, 14, 17, 79), "│   Oppenheimer (2023)  │   1.83 GB│     │    540│   31│ EZTV │");
+        // Inspector pane pins the selected result's fields.
+        assert_eq!(row(&buf, 5, 81, 118), "╭─ Details ──────────────────────────╮");
+        assert_eq!(row(&buf, 6, 81, 118), "│ Dune: Part Two (2024)  YTS         │");
+        assert_eq!(row(&buf, 9, 81, 118), "│ Size     7.28 GB                   │");
+        assert_eq!(row(&buf, 10, 81, 118), "│ Health   1240 seeders · 88 leecher │");
+        assert_eq!(row(&buf, 11, 81, 118), "│ Files    3                         │");
+        // Live transfer state for the queued result.
+        assert_eq!(row(&buf, 13, 81, 118), "│ Status   downloading               │");
+        assert_eq!(row(&buf, 14, 81, 118), "│           ██████████████████░░░░░░ │");
+        assert_eq!(row(&buf, 15, 81, 118), "│ Rates    ↓7.7 MB/s ↑512 KB/s  •41  │");
+        assert_eq!(row(&buf, 16, 81, 118), "│ Added    1001d 13hr ago            │");
+        assert_eq!(row(&buf, 18, 81, 118), "│ Hash     ih-1                      │");
+        assert_eq!(row(&buf, 19, 81, 118), "│ Magnet   magnet:?xt=urn:btih:Dune  │");
+        // Actions adapt to the queued state (play/pause/remove).
+        assert_eq!(row(&buf, 21, 81, 118), "│ P Play p Pause x Remove            │");
+        assert_eq!(row(&buf, 27, 81, 118), "╰────────────────────────────────────╯");
+        // Activity strip aggregates rates and queue depth.
+        assert_eq!(row(&buf, 28, 1, 118).trim_end(), "↓ 7.7 MB/s   ↑ 512 KB/s  ·  1 active  ·  0/3 queue");
+        // Enter's footer hint reflects the inspector.
+        assert!(row(&buf, 29, 1, 118).contains("↵ Inspect"));
+    }
+
+    #[test]
+    fn wide_seeding_shows_inspector_and_strip() {
+        let mut app = App::new("http://127.0.0.1:8765".into());
+        app.view = View::Browser;
+        app.section = Section::Seeding;
+        app.region = Region::Content;
+        app.torrents = vec![view(9, Status::Completed, 1.0, None, Some(2.5))];
+        let buf = frame(&mut app, 120, 30);
+
+        assert_eq!(row(&buf, 5, 81, 118), "╭─ Details ──────────────────────────╮");
+        assert_eq!(row(&buf, 6, 81, 118), "│ Torrent 9                          │");
+        assert_eq!(row(&buf, 9, 81, 118), "│ Status   seeding                   │");
+        assert_eq!(row(&buf, 10, 81, 118), "│ Rates    ↓- ↑2.5 MB/s  •41         │");
+        assert_eq!(row(&buf, 13, 81, 118), "│ p Pause x Remove D Delete P Play   │");
+        assert_eq!(row(&buf, 28, 1, 118).trim_end(), "↓ -   ↑ 2.5 MB/s  ·  0 active  ·  0/3 queue  ·  1 seeding");
+    }
+
 }

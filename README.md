@@ -8,19 +8,18 @@ and seed while you do other things. Built in Rust on [librqbit](https://github.c
           𐓏
  ▀█▀ █▀█ █▀█ █▀█    torq @ http://127.0.0.1:8170
   █  █▄█ █▀▄ █▄█▀
- ──────────────────────────────────────────────────────────────────
- ▌ All       ╭─ Search ────────────────────────────────────────────╮
-   Games     │ ❯ Search or paste a magnet link…                    │
-   Movies    ╰─────────────────────────────────────────────────────╯
-   TV
-   Anime     ╭─ Results (175) ─────────────────────────────────────╮
-              │ 175 results                                       │
-   Downloads │ Name                       │ Size     │ Seeds│ Lch│ Src│
-   Seeding   ├────────────────────────────┼──────────┼──────┼────┼────┤
-              │ ❯ Inception (2010) 1080p   │ 1.90 GB  │  922 │  5 │YTS │
-              │   Inception 2010 BluRay    │ 2.00 GB  │  377 │  9 │1337│
-              ╰────────────────────────────┴──────────┴──────┴────┴────╯
- ↑↓←→ Move   ↵ Details   d Download   s Sort   / Search   tab Switch   ? Keys
+ ───────────────────────────────────────────────────────────────────────────
+ ▌ All (2)     ╭─ Search ────────────────────────╮ ╭─ Details ─────────────╮
+   Games       │ ❯ Search or paste a magnet…     │ │ Inception (2010)  YTS │
+   Movies (1)  ╰─────────────────────────────────╯ │ Size     1.90 GB      │
+   TV (1)                                          │ Health   922 seeders… │
+   Anime                                          │ Status   downloading  │
+   Downloads (1) ╭─ Results (2) ────────────────╮ │           ████████░░  │
+   Seeding      │ Name                    Size %│ │ Rates    ↓1.2 MB/s…  │
+                │ ❯ Inception 2010   1.90 GB 58%│ │ P Play p Pause x …   │
+                ╰───────────────────────────────╯ ╰───────────────────────╯
+ ↓ 1.2 MB/s ↑ 300 KB/s · 1 active · 0/3 queue
+ ↑↓←→ Move  ↵ Inspect  d Download  s Sort  / Search  tab Switch  ? Keys
 ```
 
 ## Quickstart
@@ -45,11 +44,15 @@ torq tui      # starts the daemon automatically, opens the TUI
 ```
 
 In the TUI: type a query and Enter to search (empty query = browse latest),
-or `/` to edit a running search; `↵` opens a result's details, `d` adds the
-selected result. The sidebar (tab/`←→` to focus) filters results by category
-and lists Downloads/Seeding with live counts: `p` pause/resume, `x` remove,
-`D` remove and delete files, `s` sort, `?` help, `q` quits the TUI — **the
-daemon keeps downloading**.
+or `/` to edit a running search; `d` adds the selected result, `P` opens it
+in your player. Terminals ≥120 cols get a three-pane layout — sidebar,
+results list, and a right-hand **Details** inspector that always shows the
+selected item (live transfer state, files, actions); `tab`/`←→` cycle the
+panes, and a one-row activity strip keeps aggregate rates and queue depth on
+screen from every section. The sidebar filters results by category and lists
+Downloads/Seeding with live counts: `p` pause/resume, `x` remove, `D` remove
+and delete files, `s` sort, `?` help, `q` quits the TUI — **the daemon keeps
+downloading**.
 `torq status` and `torq search <query>` work from any shell, no TUI needed.
 
 Already have the repo checked out? `cargo build --release` gives you

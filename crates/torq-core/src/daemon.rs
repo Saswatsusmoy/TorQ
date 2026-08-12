@@ -280,6 +280,11 @@ impl Daemon {
 
     // -- reads ---------------------------------------------------------------
 
+    /// How many torrents may transfer concurrently; the rest wait in queue.
+    pub fn max_active(&self) -> usize {
+        self.max_active
+    }
+
     pub fn views(&self) -> Vec<TorrentView> {
         let resp = self
             .engine

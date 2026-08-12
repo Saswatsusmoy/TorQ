@@ -62,6 +62,7 @@ pub fn router(
         .route("/rss", get(list_rss).post(add_rss))
         .route("/rss/{id}", delete(remove_rss))
         .route("/library", get(library_status).post(library_scan))
+        .route("/config", get(get_config))
         .route("/config/limits", patch(set_limits))
         .route("/events", get(events))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -114,6 +115,18 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
 
 async fn list_torrents(State(state): State<Arc<AppState>>) -> Json<Vec<TorrentView>> {
     Json(state.daemon.views())
+}
+
+#[derive(Serialize)]
+struct ConfigInfo {
+    /// Concurrent transfer slots; torrents beyond this wait in queue.
+    max_active: usize,
+}
+
+async fn get_config(State(state): State<Arc<AppState>>) -> Json<ConfigInfo> {
+    Json(ConfigInfo {
+        max_active: state.daemon.max_active(),
+    })
 }
 
 #[derive(Serialize, Debug, PartialEq)]

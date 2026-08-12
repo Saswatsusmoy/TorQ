@@ -13,6 +13,19 @@ use torq_sources::{Registry, SourceGroup, TorrentResult};
 
 use crate::net::{Action, Client, UiMsg};
 
+/// Sum of per-torrent rates in Mbps→bytes/sec; None when nothing moves.
+fn aggregate_rate(rates: impl Iterator<Item = f32>) -> Option<f32> {
+    let mut sum = 0.0f32;
+    let mut any = false;
+    for m in rates {
+        if m > 0.0 && m.is_finite() {
+            sum += m * 1024.0 * 1024.0;
+            any = true;
+        }
+    }
+    any.then_some(sum)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Splash,
@@ -81,7 +94,10 @@ impl Section {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
     Sidebar,
+    /// The results/download list.
     Content,
+    /// The persistent detail pane (wide terminals only).
+    Inspector,
 }
 
 /// Results-list interaction mode (search sections only).
@@ -241,6 +257,11 @@ pub struct App {
     // Downloads / seeding
     pub torrents: Vec<TorrentView>,
     pub dl_cursor: usize,
+    /// Wide terminals get the 3-pane layout (list + inspector). Set by
+    /// `draw()` each frame so key handling matches what's on screen.
+    pub wide: bool,
+    /// Concurrent transfer slots (queue cap), refreshed from the daemon.
+    pub max_active: usize,
     // Shared
     pub help: bool,
     pub notice: Option<String>,
@@ -266,6 +287,8 @@ impl App {
             detail: None,
             torrents: Vec::new(),
             dl_cursor: 0,
+            wide: false,
+            max_active: torq_core::daemon::DEFAULT_MAX_ACTIVE,
             help: false,
             notice: None,
             tick: 0,
@@ -316,6 +339,53 @@ impl App {
             .count()
     }
 
+    pub fn queued_count(&self) -> usize {
+        self.torrents
+            .iter()
+            .filter(|t| t.status == Status::Queued)
+            .count()
+    }
+
+    /// Sidebar badge count for a section: live active/seeding counts for the
+    /// torrent lists, group-filtered result counts once a search has landed.
+    /// `None` hides the badge entirely.
+    pub fn count_for_section(&self, s: Section) -> Option<usize> {
+        match s {
+            Section::Downloads => Some(self.active_count()),
+            Section::Seeding => Some(self.seeding_count()),
+            _ => {
+                if self.searching || self.results.is_empty() {
+                    return None;
+                }
+                let n = match s.group() {
+                    Some(g) => self
+                        .results
+                        .iter()
+                        .filter(|r| in_group(&r.source, g))
+                        .count(),
+                    None => self.results.len(),
+                };
+                (n > 0).then_some(n)
+            }
+        }
+    }
+
+    /// Aggregate download rate in bytes/sec (None when nothing is moving).
+    pub fn aggregate_dl_bps(&self) -> Option<f32> {
+        aggregate_rate(self.torrents.iter().filter_map(|t| t.download_mbps))
+    }
+
+    /// Aggregate upload rate in bytes/sec (None when nothing is moving).
+    pub fn aggregate_ul_bps(&self) -> Option<f32> {
+        aggregate_rate(self.torrents.iter().filter_map(|t| t.upload_mbps))
+    }
+
+    /// The torrent matching a result's infohash, if it's in the queue —
+    /// lets result rows show live download state.
+    pub fn view_for_hash(&self, hash: &str) -> Option<&TorrentView> {
+        self.torrents.iter().find(|t| t.info_hash == hash)
+    }
+
     pub fn seeding_count(&self) -> usize {
         self.torrents
             .iter()
@@ -350,6 +420,7 @@ impl App {
                 self.notice = Some(e.to_string());
                 self.searching = false;
             }
+            UiMsg::Config(c) => self.max_active = c.max_active,
             UiMsg::Notice(s) => self.notice = Some(s),
         }
     }
@@ -441,14 +512,25 @@ impl App {
             KeyCode::Tab => {
                 self.region = match self.region {
                     Region::Sidebar => Region::Content,
+                    Region::Content if self.wide => Region::Inspector,
                     Region::Content => Region::Sidebar,
+                    Region::Inspector => Region::Sidebar,
                 }
             }
             KeyCode::Esc => match self.region {
                 Region::Content => self.region = Region::Sidebar,
+                Region::Inspector => self.region = Region::Content,
                 Region::Sidebar => self.view = View::Splash,
             },
             KeyCode::Right | KeyCode::Char('l') if self.region == Region::Sidebar => {
+                self.region = Region::Content
+            }
+            KeyCode::Right | KeyCode::Char('l')
+                if self.region == Region::Content && self.wide =>
+            {
+                self.region = Region::Inspector
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.region == Region::Inspector => {
                 self.region = Region::Content
             }
             KeyCode::Left | KeyCode::Char('h') if self.region == Region::Content => {
@@ -459,6 +541,8 @@ impl App {
         match self.region {
             Region::Sidebar => self.sidebar_key(key),
             Region::Content => self.content_key(key, client),
+            // The inspector is a read-only pane: only the action keys act.
+            Region::Inspector => self.content_actions(key, client),
         }
         Some(())
     }
@@ -540,27 +624,47 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
                 KeyCode::PageUp => self.move_cursor(-10),
                 KeyCode::PageDown => self.move_cursor(10),
+                KeyCode::Enter if self.wide => self.region = Region::Inspector,
                 KeyCode::Enter => {
                     self.detail = self.visible_results().get(self.cursor).cloned();
                     self.mode = SearchMode::Detail;
                 }
+                KeyCode::Char('/') => {
+                    self.edit = self.query.clone();
+                    self.mode = SearchMode::Editing;
+                }
+                _ => self.content_actions(key, client),
+            }
+        } else {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.move_dl_cursor(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_dl_cursor(1),
+                KeyCode::PageUp => self.move_dl_cursor(-10),
+                KeyCode::PageDown => self.move_dl_cursor(10),
+                _ => self.content_actions(key, client),
+            }
+        }
+    }
+
+    /// The action keys shared by the list and the inspector pane: they
+    /// operate on the same selected item.
+    fn content_actions(&mut self, key: KeyEvent, client: &Client) {
+        if self.is_search_section() {
+            if self.mode != SearchMode::List {
+                return;
+            }
+            match key.code {
                 KeyCode::Char('d') => {
                     if let Some(r) = self.visible_results().get(self.cursor) {
                         self.add_result(r, client);
                     }
                 }
                 KeyCode::Char('s') => self.sort = self.sort.next(),
-                KeyCode::Char('/') => {
-                    self.edit = self.query.clone();
-                    self.mode = SearchMode::Editing;
-                }
                 _ => {}
             }
         } else {
             let visible = self.visible_torrents();
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => self.move_dl_cursor(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_dl_cursor(1),
                 KeyCode::Char('p') => {
                     if let Some(v) = visible.get(self.dl_cursor) {
                         match v.status {
@@ -829,5 +933,97 @@ mod tests {
         assert_eq!(app.section, Section::Games);
         assert_eq!(app.mode, SearchMode::List);
         assert!(app.detail.is_none());
+    }
+#[test]
+    fn tab_cycles_three_regions_when_wide() {
+        let (client, _rx) = client();
+        // Wide: Sidebar -> Content -> Inspector -> Sidebar.
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.wide = true;
+        app.handle_key(key(KeyCode::Tab), &client).unwrap();
+        assert_eq!(app.region, Region::Inspector);
+        app.handle_key(key(KeyCode::Tab), &client).unwrap();
+        assert_eq!(app.region, Region::Sidebar);
+        app.handle_key(key(KeyCode::Tab), &client).unwrap();
+        assert_eq!(app.region, Region::Content);
+        // Narrow terminals skip the inspector.
+        let mut narrow = App::new("http://test".into());
+        narrow.view = View::Browser;
+        narrow.handle_key(key(KeyCode::Tab), &client).unwrap();
+        assert_eq!(narrow.region, Region::Sidebar);
+    }
+
+    #[test]
+    fn arrows_move_between_inspector_and_content() {
+        let (client, _rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.wide = true;
+        app.region = Region::Content;
+        app.handle_key(key(KeyCode::Right), &client).unwrap();
+        assert_eq!(app.region, Region::Inspector);
+        app.handle_key(key(KeyCode::Left), &client).unwrap();
+        assert_eq!(app.region, Region::Content);
+    }
+
+    #[test]
+    fn inspector_actions_operate_on_selected_torrent() {
+        let (client, mut rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.wide = true;
+        app.section = Section::Downloads;
+        app.region = Region::Inspector;
+        app.torrents = vec![view(1, Status::Downloading)];
+        app.handle_key(key(KeyCode::Char('p')), &client).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Action::Pause(1)));
+    }
+
+    #[test]
+    fn count_for_section_reflects_group_and_status() {
+        let mut app = App::new("http://test".into());
+        app.results = vec![
+            result("a", "yts", 1, 1, None),
+            result("b", "yts", 1, 1, None),
+            result("c", "eztv", 1, 1, None),
+        ];
+        app.searching = false;
+        assert_eq!(app.count_for_section(Section::All), Some(3));
+        assert_eq!(app.count_for_section(Section::Movies), Some(2));
+        assert_eq!(app.count_for_section(Section::Tv), Some(1));
+        assert_eq!(app.count_for_section(Section::Games), None);
+        // Searching hides the stale counts.
+        app.searching = true;
+        assert_eq!(app.count_for_section(Section::All), None);
+        app.searching = false;
+        // Downloads/seeding badge from the live queue.
+        app.torrents = vec![view(1, Status::Downloading), view(2, Status::Completed)];
+        assert_eq!(app.count_for_section(Section::Downloads), Some(1));
+        assert_eq!(app.count_for_section(Section::Seeding), Some(1));
+    }
+
+    #[test]
+    fn aggregate_rates_sum_mbps_as_bytes() {
+        let mut app = App::new("http://test".into());
+        let mut a = view(1, Status::Downloading);
+        a.download_mbps = Some(1.0);
+        a.upload_mbps = Some(0.5);
+        let mut b = view(2, Status::Downloading);
+        b.download_mbps = Some(2.0);
+        b.upload_mbps = None;
+        let mut c = view(3, Status::Paused);
+        c.download_mbps = None;
+        app.torrents = vec![a, b, c];
+        assert_eq!(
+            app.aggregate_dl_bps(),
+            Some(3.0 * 1024.0 * 1024.0)
+        );
+        assert_eq!(app.aggregate_ul_bps(), Some(0.5 * 1024.0 * 1024.0));
+        assert_eq!(app.queued_count(), 0);
+        let mut q = view(4, Status::Queued);
+        q.download_mbps = None;
+        app.torrents.push(q);
+        assert_eq!(app.queued_count(), 1);
     }
 }

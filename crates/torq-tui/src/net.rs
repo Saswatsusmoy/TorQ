@@ -31,8 +31,16 @@ pub enum Action {
 #[derive(Debug)]
 pub enum UiMsg {
     Torrents(Vec<TorrentView>),
+    /// Daemon-level config (queue slots) — refreshed with every snapshot.
+    Config(ConfigInfo),
     Search(anyhow::Result<SearchReport>),
     Notice(String),
+}
+
+/// Subset of daemon config the UI renders.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ConfigInfo {
+    pub max_active: usize,
 }
 
 pub struct Client {
@@ -193,6 +201,15 @@ async fn refresh(http: &reqwest::Client, base: &str, auth: &str, msgs: &Unbounde
         Err(e) => {
             let _ = msgs.send(UiMsg::Notice(format!("daemon unreachable: {e}")));
         }
+    }
+    // Config rides along on the same refresh; failures are non-fatal — the
+    // UI keeps its last-known queue slots.
+    if let Ok(cfg) = get_json::<ConfigInfo>(
+        http.get(format!("{base}/config")).header("authorization", auth),
+    )
+    .await
+    {
+        let _ = msgs.send(UiMsg::Config(cfg));
     }
 }
 
