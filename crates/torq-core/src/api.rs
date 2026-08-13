@@ -1,12 +1,16 @@
 //! REST + SSE API for the daemon.
 //!
-//! Bound to 127.0.0.1 only; every route except the middleware passes requires
-//! `Authorization: Bearer <token>` (token lives in config.toml so local
-//! clients can read it).
+//! Bound to 127.0.0.1 only; routes require `Authorization: Bearer <token>`
+//! (token lives in config.toml so local clients can read it), except the
+//! stream route, which also accepts the short-lived capability token that
+//! `/play` embeds in the URL — real players can't send headers, so the URL
+//! itself is the ticket.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
@@ -33,7 +37,16 @@ pub struct AppState {
     pub client: reqwest::Client,
     api_port: u16,
     auth_token: String,
+    /// Capability tokens minted by `/play`, keyed to their issue time. The
+    /// stream route accepts one of these (in the URL) in place of the API
+    /// bearer header, since players can't send headers.
+    stream_tokens: Arc<Mutex<HashMap<String, Instant>>>,
 }
+
+/// How long a stream URL stays valid. Long enough for a player to pause and
+/// reconnect mid-session; `/play` sweeps expired entries as it mints new
+/// ones, so the map stays small.
+const STREAM_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
 
 pub fn router(
     daemon: Arc<Daemon>,
@@ -48,6 +61,7 @@ pub fn router(
         client,
         api_port,
         auth_token,
+        stream_tokens: Arc::new(Mutex::new(HashMap::new())),
     });
     Router::new()
         .route("/health", get(health))
@@ -77,18 +91,43 @@ async fn require_auth(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let authed = req
+    let header_ok = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|token| constant_time_eq(token.as_bytes(), state.auth_token.as_bytes()))
         .unwrap_or(false);
-    if authed {
+    // The stream route is also reachable with the capability token `/play`
+    // embeds in the URL — players (VLC, IINA, mpv) can't send headers.
+    let token_ok = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("token="))
+                .map(|t| stream_token_valid(&state.stream_tokens, t))
+        })
+        .unwrap_or(false);
+    if header_ok || token_ok {
         next.run(req).await
     } else {
         (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
     }
+}
+
+fn stream_token_valid(map: &Mutex<HashMap<String, Instant>>, token: &str) -> bool {
+    map.lock()
+        .ok()
+        .and_then(|m| m.get(token).copied())
+        .is_some_and(|issued| issued.elapsed() < STREAM_TOKEN_TTL)
+}
+
+/// Fresh capability token for a stream URL (16 random bytes, hex).
+fn new_stream_token() -> String {
+    let mut b = [0u8; 16];
+    getrandom::getrandom(&mut b).expect("os rng");
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -207,8 +246,14 @@ async fn play_file(
     let files = file_list(&details);
     let file =
         pick_play_file(&files).ok_or_else(|| ApiError::NotFound("torrent has no files".into()))?;
+    let mut tokens = state.stream_tokens.lock().expect("stream tokens");
+    let now = Instant::now();
+    tokens.retain(|_, issued| now.duration_since(*issued) < STREAM_TOKEN_TTL);
+    let token = new_stream_token();
+    tokens.insert(token.clone(), now);
+    drop(tokens);
     let url = format!(
-        "http://127.0.0.1:{}/torrents/{id}/stream/{}",
+        "http://127.0.0.1:{}/torrents/{id}/stream/{}?token={token}",
         state.api_port, file.id
     );
     Ok(Json(PlayResponse {
@@ -602,6 +647,20 @@ mod tests {
             length,
             included: true,
         }
+    }
+
+    #[test]
+    fn stream_tokens_expire_and_reject_unknown() {
+        let map = Mutex::new(HashMap::new());
+        assert!(!stream_token_valid(&map, "nope"));
+        map.lock().unwrap().insert("fresh".into(), Instant::now());
+        assert!(stream_token_valid(&map, "fresh"));
+        map.lock()
+            .unwrap()
+            .insert("stale".into(), Instant::now() - STREAM_TOKEN_TTL - Duration::from_secs(1));
+        assert!(!stream_token_valid(&map, "stale"));
+        // A fresh token survives alongside the stale one.
+        assert!(stream_token_valid(&map, "fresh"));
     }
 
     #[test]

@@ -3,6 +3,18 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.10] — 2026-08-13
+
+### Fixed
+
+- **Players can actually stream now**: `/stream` was behind the bearer-token
+  middleware, but VLC/IINA/mpv can't send HTTP headers — the first real
+  player attempt got `401 authentication failed without realm`. `/play` now
+  mints a short-lived capability token (1h, swept on mint) and embeds it in
+  the stream URL (`?token=…`); the stream route accepts it in place of the
+  header. The rest of the API stays header-only, so the auth boundary is
+  unchanged — the URL itself is the ticket.
+
 ## [0.1.9] — 2026-08-13
 
 ### Added
