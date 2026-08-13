@@ -168,12 +168,12 @@ async fn add_and_play(
     player: &Option<String>,
     magnet: &str,
 ) {
-    match torq_core::rest::add_torrent(http, base, &token, Some(magnet), None).await {
+    match torq_core::rest::add_torrent(http, base, token, Some(magnet), None).await {
         Ok(id) => {
             let _ = msgs.send(UiMsg::Notice(format!(
                 "resolving metadata for torrent {id}…"
             )));
-            match torq_core::rest::wait_playable(http, base, &token, id, Duration::from_secs(120))
+            match torq_core::rest::wait_playable(http, base, token, id, Duration::from_secs(120))
                 .await
             {
                 Ok(url) => match torq_core::player::open_in_player(&url, player.as_deref()) {
