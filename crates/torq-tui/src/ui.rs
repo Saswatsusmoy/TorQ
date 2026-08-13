@@ -626,7 +626,7 @@ fn draw_results(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     if app.mode == SearchMode::Detail && app.detail.is_some() {
-        lines.extend(detail_lines(app.detail.as_ref().expect("checked"), inner_w));
+        lines.extend(detail_lines(app.detail.as_ref().expect("checked"), inner_w, app));
     } else {
         lines.push(Line::from(fit(
             results_status(app, results.len(), browsing),
@@ -865,7 +865,7 @@ fn result_row(r: &TorrentResult, name_w: usize, here: bool, app: &App, pct: bool
     out
 }
 
-fn detail_lines(r: &TorrentResult, inner_w: usize) -> Vec<Line<'static>> {
+fn detail_lines(r: &TorrentResult, inner_w: usize, app: &App) -> Vec<Line<'static>> {
     let (tag, tag_color) = theme::source_style(&r.source);
     let dim = Style::new().add_modifier(Modifier::DIM);
     let alt = Style::new().fg(theme::ALT).add_modifier(Modifier::DIM);
@@ -947,16 +947,25 @@ fn detail_lines(r: &TorrentResult, inner_w: usize) -> Vec<Line<'static>> {
     ));
 
     lines.push(Line::from(vec![Span::raw(" ")]));
-    let hint = vec![
-        Span::styled(
-            "d",
-            Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" Download", Style::new().fg(theme::TEXT)),
-        Span::styled(format!("  {}  ", icon::DOT), dim),
-        Span::styled("esc", Style::new().fg(theme::ALT)),
-        Span::styled(" back", dim),
-    ];
+    // A result already in the queue offers the live torrent actions.
+    let hint: Vec<Span<'static>> = if app.view_for_hash(&r.info_hash).is_some() {
+        action_line(
+            &[("P", "Play"), ("p", "Pause"), ("x", "Remove"), ("esc", "Back")],
+            inner_w,
+        )
+        .spans
+    } else {
+        vec![
+            Span::styled(
+                "d",
+                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Download", Style::new().fg(theme::TEXT)),
+            Span::styled(format!("  {}  ", icon::DOT), dim),
+            Span::styled("esc", Style::new().fg(theme::ALT)),
+            Span::styled(" back", dim),
+        ]
+    };
     lines.push(Line::from(fit(hint, inner_w)));
     lines
 }
@@ -1745,7 +1754,9 @@ mod render_tests {
             download_mbps: down,
             peers: 41,
             error: None,
-            added_at: 1_700_000_000,
+            // 0 renders as "-": relative times in fixtures would drift with
+            // the wall clock and flake the pixel tests.
+            added_at: 0,
         }
     }
 
@@ -2038,7 +2049,7 @@ mod render_tests {
         assert_eq!(row(&buf, 13, 81, 118), "│ Status   downloading               │");
         assert_eq!(row(&buf, 14, 81, 118), "│           ██████████████████░░░░░░ │");
         assert_eq!(row(&buf, 15, 81, 118), "│ Rates    ↓7.7 MB/s ↑512 KB/s  •41  │");
-        assert_eq!(row(&buf, 16, 81, 118), "│ Added    1001d 13hr ago            │");
+        assert_eq!(row(&buf, 16, 81, 118), "│ Added    -                         │");
         assert_eq!(row(&buf, 18, 81, 118), "│ Hash     ih-1                      │");
         assert_eq!(row(&buf, 19, 81, 118), "│ Magnet   magnet:?xt=urn:btih:Dune  │");
         // Actions adapt to the queued state (play/pause/remove).
@@ -2065,6 +2076,32 @@ mod render_tests {
         assert_eq!(row(&buf, 10, 81, 118), "│ Rates    ↓- ↑2.5 MB/s  •41         │");
         assert_eq!(row(&buf, 13, 81, 118), "│ p Pause x Remove D Delete P Play   │");
         assert_eq!(row(&buf, 28, 1, 118).trim_end(), "↓ -   ↑ 2.5 MB/s  ·  0 active  ·  0/3 queue  ·  1 seeding");
+    }
+
+
+    #[test]
+    fn narrow_detail_advertises_play_for_queued_result() {
+        let mut app = App::new("http://127.0.0.1:8765".into());
+        app.view = View::Browser;
+        app.region = Region::Content;
+        app.results = vec![result(
+            "Dune: Part Two (2024)",
+            "yts",
+            7_820_000_000,
+            1240,
+            88,
+        )];
+        app.mode = SearchMode::Detail;
+        app.detail = app.results.first().cloned();
+        let mut t = view(1, Status::Downloading, 0.64, Some(7.7), None);
+        t.info_hash = "hash-Dune: Part Two (2024)".into();
+        app.torrents = vec![t];
+        let buf = frame(&mut app, 80, 24);
+
+        assert_eq!(
+            row(&buf, 20, 17, 78),
+            "│ P Play p Pause x Remove esc Back                           │"
+        );
     }
 
 }

@@ -599,6 +599,15 @@ impl App {
                     self.add_result(r, client);
                 }
             }
+            KeyCode::Char('p') | KeyCode::Char('x') | KeyCode::Char('D') | KeyCode::Char('P') => {
+                let queued = self
+                    .detail
+                    .as_ref()
+                    .and_then(|r| self.view_for_hash(&r.info_hash).map(|t| (t.id, t.status)));
+                if let Some((id, status)) = queued {
+                    self.torrent_action(key, id, status, client);
+                }
+            }
             _ => {}
         }
         Some(())
@@ -653,43 +662,52 @@ impl App {
             if self.mode != SearchMode::List {
                 return;
             }
+            let visible = self.visible_results();
+            let Some(r) = visible.get(self.cursor) else {
+                return;
+            };
             match key.code {
-                KeyCode::Char('d') => {
-                    if let Some(r) = self.visible_results().get(self.cursor) {
-                        self.add_result(r, client);
+                KeyCode::Char('d') => self.add_result(r, client),
+                KeyCode::Char('s') => self.sort = self.sort.next(),
+                _ => {
+                    // A result already in the queue accepts the torrent
+                    // actions (play/pause/remove) straight from the list.
+                    let queued = self
+                        .view_for_hash(&r.info_hash)
+                        .map(|t| (t.id, t.status));
+                    if let Some((id, status)) = queued {
+                        self.torrent_action(key, id, status, client);
                     }
                 }
-                KeyCode::Char('s') => self.sort = self.sort.next(),
-                _ => {}
             }
         } else {
-            let visible = self.visible_torrents();
-            match key.code {
-                KeyCode::Char('p') => {
-                    if let Some(v) = visible.get(self.dl_cursor) {
-                        match v.status {
-                            Status::Paused | Status::Queued => client.send(Action::Resume(v.id)),
-                            _ => client.send(Action::Pause(v.id)),
-                        }
-                    }
-                }
-                KeyCode::Char('x') | KeyCode::Char('D') => {
-                    if let Some(v) = visible.get(self.dl_cursor) {
-                        let delete_files = key.code == KeyCode::Char('D');
-                        client.send(Action::Remove {
-                            id: v.id,
-                            delete_files,
-                        });
-                    }
-                }
-                KeyCode::Char('r') => client.send(Action::Refresh),
-                KeyCode::Char('P') => {
-                    if let Some(v) = visible.get(self.dl_cursor) {
-                        client.send(Action::Play { id: v.id });
-                    }
-                }
-                _ => {}
+            let queued = self
+                .visible_torrents()
+                .get(self.dl_cursor)
+                .map(|v| (v.id, v.status));
+            if let Some((id, status)) = queued {
+                self.torrent_action(key, id, status, client);
             }
+        }
+    }
+
+    /// Pause/resume, remove (+files), refresh, and play — shared by the
+    /// torrent lists and any search result that is already in the queue.
+    fn torrent_action(&mut self, key: KeyEvent, id: usize, status: Status, client: &Client) {
+        match key.code {
+            KeyCode::Char('p') => match status {
+                Status::Paused | Status::Queued => client.send(Action::Resume(id)),
+                _ => client.send(Action::Pause(id)),
+            },
+            KeyCode::Char('x') | KeyCode::Char('D') => {
+                client.send(Action::Remove {
+                    id,
+                    delete_files: key.code == KeyCode::Char('D'),
+                });
+            }
+            KeyCode::Char('r') => client.send(Action::Refresh),
+            KeyCode::Char('P') => client.send(Action::Play { id }),
+            _ => {}
         }
     }
 }
@@ -1026,4 +1044,68 @@ mod tests {
         app.torrents.push(q);
         assert_eq!(app.queued_count(), 1);
     }
+
+    #[test]
+    fn search_section_plays_queued_result() {
+        let (client, mut rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.wide = true;
+        app.results = vec![TorrentResult {
+            info_hash: "ih-1".into(),
+            name: "Dune".into(),
+            size_bytes: 1,
+            seeders: 1,
+            leechers: 0,
+            num_files: None,
+            source: "yts".into(),
+            magnet: "magnet:1".into(),
+            added: None,
+        }];
+        app.torrents = vec![view(1, Status::Downloading)];
+        app.region = Region::Content;
+        // P on a queued result streams it — no Downloads detour needed.
+        app.handle_key(key(KeyCode::Char('P')), &client).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Action::Play { id: 1 }));
+        // p pauses the same torrent.
+        app.handle_key(key(KeyCode::Char('p')), &client).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Action::Pause(1)));
+    }
+
+    #[test]
+    fn detail_view_plays_queued_result() {
+        let (client, mut rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.results = vec![TorrentResult {
+            info_hash: "ih-1".into(),
+            name: "Dune".into(),
+            size_bytes: 1,
+            seeders: 1,
+            leechers: 0,
+            num_files: None,
+            source: "yts".into(),
+            magnet: "magnet:1".into(),
+            added: None,
+        }];
+        app.detail = app.results.first().cloned();
+        app.mode = SearchMode::Detail;
+        app.torrents = vec![view(1, Status::Downloading)];
+        app.handle_key(key(KeyCode::Char('P')), &client).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Action::Play { id: 1 }));
+    }
+
+    #[test]
+    fn search_section_actions_ignore_unqueued_results() {
+        let (client, mut rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        app.wide = true;
+        app.results = vec![result("fresh", "yts", 1, 1, None)];
+        app.region = Region::Content;
+        app.handle_key(key(KeyCode::Char('P')), &client).unwrap();
+        app.handle_key(key(KeyCode::Char('p')), &client).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
 }

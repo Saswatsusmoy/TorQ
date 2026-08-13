@@ -3,6 +3,20 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.7] — 2026-08-13
+
+### Fixed
+
+- **Streaming reachable from search**: `P` (play), `p` (pause/resume), and
+  `x`/`D` (remove) now work on a result that is already downloading, from
+  the search list and the detail view — previously they only acted in the
+  Downloads/Seeding sections, so playing a torrent you'd just queued forced
+  a section switch. The inspector's `P Play` hint is no longer dead. All
+  action keys route through one shared helper.
+- Render-test fixtures no longer embed wall-clock-relative timestamps
+  (`Added` rows used `relative_time`), which made the pixel tests flake
+  across hour/day boundaries.
+
 ## [0.1.6] — 2026-08-12
 
 ### UI — full layout revamp (theme unchanged)
