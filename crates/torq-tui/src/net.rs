@@ -20,9 +20,14 @@ pub enum Action {
         id: usize,
         delete_files: bool,
     },
-    /// Resolve the torrent's stream URL and open it in the OS player.
+    /// Resolve the torrent's stream URL and open it in a player.
     Play {
         id: usize,
+    },
+    /// Add a magnet, wait for it to become playable, then stream it — the
+    /// one-key "play now" path (Stremio-style) for results not yet queued.
+    AddAndPlay {
+        magnet: String,
     },
     Refresh,
 }
@@ -142,10 +147,50 @@ async fn client_loop(
                     refresh(&http, &base, &auth, &msgs).await;
                 }
                 Action::Play { id } => play_torrent(&http, &base, &auth, &msgs, id, player.clone()).await,
+                Action::AddAndPlay { magnet } => {
+                    add_and_play(&http, &base, &token, &msgs, &player, &magnet).await;
+                    refresh(&http, &base, &auth, &msgs).await;
+                }
                 Action::Refresh => refresh(&http, &base, &auth, &msgs).await,
             },
             _ = interval.tick() => refresh(&http, &base, &auth, &msgs).await,
             Some(()) = ping_rx.recv() => refresh(&http, &base, &auth, &msgs).await,
+        }
+    }
+}
+
+/// Add a magnet and launch the player the moment the stream URL resolves.
+async fn add_and_play(
+    http: &reqwest::Client,
+    base: &str,
+    token: &str,
+    msgs: &UnboundedSender<UiMsg>,
+    player: &Option<String>,
+    magnet: &str,
+) {
+    match torq_core::rest::add_torrent(http, base, &token, Some(magnet), None).await {
+        Ok(id) => {
+            let _ = msgs.send(UiMsg::Notice(format!(
+                "resolving metadata for torrent {id}…"
+            )));
+            match torq_core::rest::wait_playable(http, base, &token, id, Duration::from_secs(120))
+                .await
+            {
+                Ok(url) => match torq_core::player::open_in_player(&url, player.as_deref()) {
+                    Ok(name) => {
+                        let _ = msgs.send(UiMsg::Notice(format!("▶ streaming in {name}")));
+                    }
+                    Err(e) => {
+                        let _ = msgs.send(UiMsg::Notice(format!("play failed: {e}")));
+                    }
+                },
+                Err(e) => {
+                    let _ = msgs.send(UiMsg::Notice(format!("not playable yet: {e}")));
+                }
+            }
+        }
+        Err(e) => {
+            let _ = msgs.send(UiMsg::Notice(format!("add failed: {e}")));
         }
     }
 }

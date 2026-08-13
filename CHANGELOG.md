@@ -3,6 +3,26 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.9] — 2026-08-13
+
+### Added
+
+- **One-key play now (Stremio-style)**: `P` on a result that isn't queued
+  adds the torrent, waits for metadata (DHT/swarm for magnets, instant for
+  `.torrent` files), and opens the player the moment the stream URL is
+  live — no manual download step, no full-download wait. On queued items it
+  just plays. The inspector and detail view advertise it; the help card
+  documents it.
+- **`torq play` / `torq stream` accept any source**: a torrent id, a magnet
+  link, a 40-char infohash, or a `.torrent` file path. Non-ids are added
+  first and streamed once playable, sharing the same add→wait→resolve
+  helpers (`torq_core::rest`) as the TUI.
+
+### Fixed
+
+- Bearer auth double-prefix in the new REST helpers (`Bearer Bearer …`
+  401) — the shared helpers take the raw token now.
+
 ## [0.1.8] — 2026-08-13
 
 ### Added

@@ -55,8 +55,11 @@ enum Command {
         cmd: RssCmd,
     },
     /// Print the stream URL for a torrent's video file (pipe to mpv/VLC).
+    /// Accepts a torrent id, a magnet link, a 40-char infohash, or a path to
+    /// a .torrent file (non-ids are added first and streamed once ready).
     Stream { id: String },
-    /// Open the torrent's video in the system player (streams while downloading).
+    /// Open the torrent's video in a real video player (streams while
+    /// downloading). Accepts the same inputs as `stream`.
     Play { id: String },
     /// Cross-seed library: scan .torrent dirs, show index status.
     Library {
@@ -178,24 +181,87 @@ async fn run_stream(id: &str, launch: bool) -> anyhow::Result<()> {
     let config = Config::load()?;
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{}", config.api_port);
-    let play: serde_json::Value = client
-        .get(format!("{base}/torrents/{id}/play"))
-        .bearer_auth(&config.auth_token)
-        .send()
-        .await
-        .with_context(|| "daemon not reachable — start it with `torq daemon`")?
-        .error_for_status()?
-        .json()
+    let auth = config.auth_token;
+
+    // A numeric id addresses an existing torrent; anything else (magnet,
+    // infohash, .torrent path) is added first and streamed once playable.
+    let (id, added): (usize, bool) = match id.parse() {
+        Ok(n) => (n, false),
+        Err(_) => {
+            let magnet = if id.starts_with("magnet:") {
+                Some(id.to_string())
+            } else if id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+                Some(format!("magnet:?xt=urn:btih:{id}"))
+            } else if std::path::Path::new(id).is_file() {
+                None
+            } else {
+                anyhow::bail!("not a torrent id, magnet, infohash, or .torrent file: {id}");
+            };
+            let torrent_b64 = if magnet.is_none() {
+                Some(torq_core::rest::torrent_file_to_b64(std::path::Path::new(id))?)
+            } else {
+                None
+            };
+            eprintln!("adding {id}…");
+            let n = torq_core::rest::add_torrent(
+                &client,
+                &base,
+                &auth,
+                magnet.as_deref(),
+                torrent_b64.as_deref(),
+            )
+            .await
+            .with_context(|| "daemon not reachable — start it with `torq daemon`")?;
+            eprintln!("waiting for metadata…");
+            (n, true)
+        }
+    };
+
+    // A freshly added torrent's metadata may still be resolving (magnets
+    // fetch it from the swarm); poll until the stream URL exists.
+    let (url, name, length) = if added {
+        eprintln!("waiting for the stream to become playable…");
+        let url = torq_core::rest::wait_playable(
+            &client,
+            &base,
+            &auth,
+            id,
+            std::time::Duration::from_secs(120),
+        )
         .await?;
-    let url = play["url"].as_str().unwrap_or_default();
+        let play: serde_json::Value = client
+            .get(format!("{base}/torrents/{id}/play"))
+            .bearer_auth(&auth)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        (
+            url,
+            play["name"].as_str().unwrap_or("?").to_string(),
+            play["length"].as_u64().unwrap_or(0),
+        )
+    } else {
+        let play: serde_json::Value = client
+            .get(format!("{base}/torrents/{id}/play"))
+            .bearer_auth(&auth)
+            .send()
+            .await
+            .with_context(|| "daemon not reachable — start it with `torq daemon`")?
+            .error_for_status()?
+            .json()
+            .await?;
+        (
+            play["url"].as_str().unwrap_or_default().to_string(),
+            play["name"].as_str().unwrap_or("?").to_string(),
+            play["length"].as_u64().unwrap_or(0),
+        )
+    };
     println!("{url}");
-    println!(
-        "  {} ({})",
-        play["name"].as_str().unwrap_or("?"),
-        play["length"].as_u64().unwrap_or(0)
-    );
+    println!("  {name} ({length})");
     if launch {
-        match torq_core::player::open_in_player(url, config.player.as_deref()) {
+        match torq_core::player::open_in_player(&url, config.player.as_deref()) {
             Ok(name) => println!("playing in {name}"),
             Err(e) => anyhow::bail!("{e}"),
         }

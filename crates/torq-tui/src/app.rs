@@ -599,7 +599,20 @@ impl App {
                     self.add_result(r, client);
                 }
             }
-            KeyCode::Char('p') | KeyCode::Char('x') | KeyCode::Char('D') | KeyCode::Char('P') => {
+            KeyCode::Char('P') => {
+                let queued = self
+                    .detail
+                    .as_ref()
+                    .and_then(|r| self.view_for_hash(&r.info_hash).map(|t| (t.id, t.status)));
+                if let Some((id, status)) = queued {
+                    self.torrent_action(key, id, status, client);
+                } else if let Some(r) = &self.detail {
+                    client.send(Action::AddAndPlay {
+                        magnet: r.magnet.clone(),
+                    });
+                }
+            }
+            KeyCode::Char('p') | KeyCode::Char('x') | KeyCode::Char('D') => {
                 let queued = self
                     .detail
                     .as_ref()
@@ -669,6 +682,20 @@ impl App {
             match key.code {
                 KeyCode::Char('d') => self.add_result(r, client),
                 KeyCode::Char('s') => self.sort = self.sort.next(),
+                KeyCode::Char('P') => {
+                    // Play now: an already-queued result just plays; anything
+                    // else is added and streamed the moment it's playable.
+                    let queued = self
+                        .view_for_hash(&r.info_hash)
+                        .map(|t| (t.id, t.status));
+                    if let Some((id, status)) = queued {
+                        self.torrent_action(key, id, status, client);
+                    } else {
+                        client.send(Action::AddAndPlay {
+                            magnet: r.magnet.clone(),
+                        });
+                    }
+                }
                 _ => {
                     // A result already in the queue accepts the torrent
                     // actions (play/pause/remove) straight from the list.
@@ -1096,16 +1123,41 @@ mod tests {
     }
 
     #[test]
-    fn search_section_actions_ignore_unqueued_results() {
+    fn p_on_unqueued_result_sends_add_and_play() {
         let (client, mut rx) = client();
         let mut app = App::new("http://test".into());
         app.view = View::Browser;
         app.wide = true;
-        app.results = vec![result("fresh", "yts", 1, 1, None)];
+        let r = result("fresh", "yts", 1, 1, None);
+        let magnet = r.magnet.clone();
+        app.results = vec![r];
         app.region = Region::Content;
+        // P on a result that isn't queued = one-key stream now.
         app.handle_key(key(KeyCode::Char('P')), &client).unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Action::AddAndPlay { magnet: m } if m == magnet
+        ));
+        // p still does nothing for unqueued results.
         app.handle_key(key(KeyCode::Char('p')), &client).unwrap();
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn detail_p_on_unqueued_sends_add_and_play() {
+        let (client, mut rx) = client();
+        let mut app = App::new("http://test".into());
+        app.view = View::Browser;
+        let r = result("fresh", "yts", 1, 1, None);
+        let magnet = r.magnet.clone();
+        app.results = vec![r];
+        app.detail = app.results.first().cloned();
+        app.mode = SearchMode::Detail;
+        app.handle_key(key(KeyCode::Char('P')), &client).unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Action::AddAndPlay { magnet: m } if m == magnet
+        ));
     }
 
 }

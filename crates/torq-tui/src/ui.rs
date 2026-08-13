@@ -308,7 +308,7 @@ fn inspector_result_lines(app: &App, out: &mut Vec<Line<'static>>, inner_w: usiz
     let actions = if app.view_for_hash(&r.info_hash).is_some() {
         vec![("P", "Play"), ("p", "Pause"), ("x", "Remove")]
     } else {
-        vec![("d", "Download")]
+        vec![("P", "Play now"), ("d", "Download")]
     };
     out.push(action_line(&actions, inner_w));
 }
@@ -955,16 +955,11 @@ fn detail_lines(r: &TorrentResult, inner_w: usize, app: &App) -> Vec<Line<'stati
         )
         .spans
     } else {
-        vec![
-            Span::styled(
-                "d",
-                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Download", Style::new().fg(theme::TEXT)),
-            Span::styled(format!("  {}  ", icon::DOT), dim),
-            Span::styled("esc", Style::new().fg(theme::ALT)),
-            Span::styled(" back", dim),
-        ]
+        action_line(
+            &[("P", "Play now"), ("d", "Download"), ("esc", "Back")],
+            inner_w,
+        )
+        .spans
     };
     lines.push(Line::from(fit(hint, inner_w)));
     lines
@@ -1368,6 +1363,7 @@ const HELP_GROUPS: [HelpGroup; 3] = [
             ("/", "Edit search"),
             ("↵", "Open details"),
             ("d", "Download"),
+            ("P", "Play now (add & stream)"),
             ("s", "Sort results"),
             ("esc", "Back"),
         ],
@@ -1930,7 +1926,7 @@ mod render_tests {
         assert_eq!(row(&buf, 15, 17, 78), "│ Files    3                                                 │");
         assert_eq!(row(&buf, 17, 17, 78), "│ Hash     hash-Dune: Part Two (2024)                        │");
         assert_eq!(row(&buf, 18, 17, 78), "│ Magnet   magnet:?xt=urn:btih:Dune: Part Two (2024)         │");
-        assert_eq!(row(&buf, 20, 17, 78), "│ d Download  ·  esc back                                    │");
+        assert_eq!(row(&buf, 20, 17, 78), "│ P Play now d Download esc Back                             │");
         assert_eq!(row(&buf, 21, 17, 78), "╰────────────────────────────────────────────────────────────╯");
         // Strip stays on even in the detail view.
         assert_eq!(row(&buf, 22, 1, 78).trim_end(), "· idle — all quiet");
@@ -1950,7 +1946,7 @@ mod render_tests {
         let top = format!("╭{}╮", "─".repeat(76));
         let bottom = format!("╰{}╯", "─".repeat(76));
         assert_eq!(row(&buf, 5, 1, 78), top);
-        assert_eq!(row(&buf, 24, 1, 78), bottom);
+        assert_eq!(row(&buf, 25, 1, 78), bottom);
         // Body and footer are replaced, not drawn underneath.
         assert_eq!(row(&buf, 27, 0, 99).trim_end(), "");
 
@@ -1964,8 +1960,10 @@ mod render_tests {
         assert_eq!(row(&buf, 16, 3, 10), "  Search");
         assert_eq!(row(&buf, 17, 3, 25), "/           Edit search");
         // Footer lines inside the card.
-        assert!(row(&buf, 22, 3, 62).contains("The daemon keeps downloading"));
-        assert_eq!(row(&buf, 23, 3, 30).trim_end(), "Press ? or esc to close");
+        assert!(row(&buf, 23, 3, 62).contains("The daemon keeps downloading"));
+        assert_eq!(row(&buf, 24, 3, 30).trim_end(), "Press ? or esc to close");
+        // The Search group advertises the one-key stream path.
+        assert_eq!(row(&buf, 20, 3, 37), "P           Play now (add & stream)");
     }
 
     #[test]
@@ -2105,3 +2103,6 @@ mod render_tests {
     }
 
 }
+
+
+

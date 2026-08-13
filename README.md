@@ -55,7 +55,13 @@ and delete files, `s` sort, `?` help, `q` quits the TUI — **the daemon keeps
 downloading**.
 `torq status` and `torq search <query>` work from any shell, no TUI needed.
 
-`P` and `torq play <id>` open the stream in a **real video player**, never a
+`P` is a one-key **play now**: on a result that isn't downloading yet it
+adds the torrent, waits for the metadata, and opens the player the moment
+the stream is live (Stremio-style, no full download first). On anything
+already queued it just plays. `torq play` / `torq stream` accept a torrent
+id, a magnet, a 40-char infohash, or a path to a `.torrent` file.
+
+`P` and `torq play` open the stream in a **real video player**, never a
 browser: torq auto-detects VLC > IINA > mpv > ffplay (macOS app bundles and
 PATH binaries), falling back to QuickTime on macOS and the system browser
 elsewhere. Set `player` in `~/.config/torq/config.toml` to force one
