@@ -195,10 +195,10 @@ async fn run_stream(id: &str, launch: bool) -> anyhow::Result<()> {
         play["length"].as_u64().unwrap_or(0)
     );
     if launch {
-        #[cfg(target_os = "macos")]
-        std::process::Command::new("open").arg(url).spawn()?;
-        #[cfg(not(target_os = "macos"))]
-        std::process::Command::new("xdg-open").arg(url).spawn()?;
+        match torq_core::player::open_in_player(url, config.player.as_deref()) {
+            Ok(name) => println!("playing in {name}"),
+            Err(e) => anyhow::bail!("{e}"),
+        }
     }
     Ok(())
 }

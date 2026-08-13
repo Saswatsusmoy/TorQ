@@ -55,6 +55,13 @@ and delete files, `s` sort, `?` help, `q` quits the TUI — **the daemon keeps
 downloading**.
 `torq status` and `torq search <query>` work from any shell, no TUI needed.
 
+`P` and `torq play <id>` open the stream in a **real video player**, never a
+browser: torq auto-detects VLC > IINA > mpv > ffplay (macOS app bundles and
+PATH binaries), falling back to QuickTime on macOS and the system browser
+elsewhere. Set `player` in `~/.config/torq/config.toml` to force one
+(`player = "iina"`, a path, or `"browser"`). For scripted playback,
+`mpv "$(torq stream <id>)"` works without any player installed.
+
 Already have the repo checked out? `cargo build --release` gives you
 `target/release/torq` directly.
 

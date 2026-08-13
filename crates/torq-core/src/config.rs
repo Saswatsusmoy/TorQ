@@ -49,6 +49,11 @@ pub struct Config {
     pub library_dirs: Vec<PathBuf>,
     /// Time-of-day bandwidth schedule; empty = always use the flat limits.
     pub schedule: Vec<ScheduleEntry>,
+    /// Video player for `torq play` / the TUI `P` key: a player name (vlc,
+    /// iina, mpv, ffplay), a path to an executable, or "browser". None =
+    /// auto-detect the best installed player (VLC > IINA > mpv > ffplay,
+    /// then the platform opener as a last resort).
+    pub player: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +80,7 @@ impl Default for Config {
             watch_dirs: Vec::new(),
             library_dirs: Vec::new(),
             schedule: Vec::new(),
+            player: None,
         }
     }
 }

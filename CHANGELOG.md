@@ -3,6 +3,19 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.8] — 2026-08-13
+
+### Added
+
+- **Real video player for streaming**: `P` and `torq play` no longer hand
+  the stream URL to the browser. A new `torq_core::player` module resolves
+  the best installed player — VLC > IINA > mpv > ffplay (macOS app bundles
+  and PATH binaries) — falling back to QuickTime Player on macOS and the
+  system opener elsewhere. The TUI shows a `▶ playing in <player>` notice.
+- **`player` config key**: `~/.config/torq/config.toml` → `player = "iina"`
+  forces a player by name; a path is used verbatim; `"browser"` restores
+  the old behavior. Both the TUI and `torq play` honor it.
+
 ## [0.1.7] — 2026-08-13
 
 ### Fixed

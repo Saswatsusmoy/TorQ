@@ -48,10 +48,14 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn spawn(base: String, token: String) -> (Self, UnboundedReceiver<UiMsg>) {
+    pub fn spawn(
+        base: String,
+        token: String,
+        player: Option<String>,
+    ) -> (Self, UnboundedReceiver<UiMsg>) {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        tokio::spawn(client_loop(base, token, action_rx, msg_tx));
+        tokio::spawn(client_loop(base, token, player, action_rx, msg_tx));
         (Self { tx: action_tx }, msg_rx)
     }
 
@@ -94,6 +98,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(
 async fn client_loop(
     base: String,
     token: String,
+    player: Option<String>,
     mut actions: UnboundedReceiver<Action>,
     msgs: UnboundedSender<UiMsg>,
 ) {
@@ -136,7 +141,7 @@ async fn client_loop(
                     }
                     refresh(&http, &base, &auth, &msgs).await;
                 }
-                Action::Play { id } => play_torrent(&http, &base, &auth, &msgs, id).await,
+                Action::Play { id } => play_torrent(&http, &base, &auth, &msgs, id, player.clone()).await,
                 Action::Refresh => refresh(&http, &base, &auth, &msgs).await,
             },
             _ = interval.tick() => refresh(&http, &base, &auth, &msgs).await,
@@ -171,6 +176,7 @@ async fn play_torrent(
     auth: &str,
     msgs: &UnboundedSender<UiMsg>,
     id: usize,
+    player: Option<String>,
 ) {
     let req = http
         .get(format!("{base}/torrents/{id}/play"))
@@ -178,10 +184,16 @@ async fn play_torrent(
     match get_json::<serde_json::Value>(req).await {
         Ok(play) => {
             if let Some(url) = play["url"].as_str() {
-                #[cfg(target_os = "macos")]
-                std::process::Command::new("open").arg(url).spawn().ok();
-                #[cfg(not(target_os = "macos"))]
-                std::process::Command::new("xdg-open").arg(url).spawn().ok();
+                // Prefer a real video player over the browser that
+                // `open`/`xdg-open` would use for an http URL.
+                match torq_core::player::open_in_player(url, player.as_deref()) {
+                    Ok(name) => {
+                        let _ = msgs.send(UiMsg::Notice(format!("▶ playing in {name}")));
+                    }
+                    Err(e) => {
+                        let _ = msgs.send(UiMsg::Notice(format!("play failed: {e}")));
+                    }
+                }
             }
         }
         Err(e) => {

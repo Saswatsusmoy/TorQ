@@ -38,7 +38,11 @@ pub async fn run(config: &Config) -> Result<()> {
         );
     }
 
-    let (client, mut msgs) = Client::spawn(base.clone(), config.auth_token.clone());
+    let (client, mut msgs) = Client::spawn(
+        base.clone(),
+        config.auth_token.clone(),
+        config.player.clone(),
+    );
     let mut terminal = ratatui::init();
     // Wordmark in the terminal chrome while the TUI owns the screen.
     crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("torq"))
