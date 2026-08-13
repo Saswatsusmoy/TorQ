@@ -3,6 +3,26 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.11] — 2026-08-13
+
+### Fixed
+
+- **MKV actually plays mid-download.** librqbit fetches first/last pieces
+  first and the downloaded region is not contiguous, so VLC's random seeks
+  (the MKV index/cues lives at the end of the file) stalled on missing
+  pieces and killed playback (`cannot seek to offset … / damaged file`).
+  `/stream` now probes each ranged request (3s) and answers **416** fast
+  when the piece isn't downloaded, only advertises `Accept-Ranges` once the
+  file is complete, and otherwise serves the linear stream VLC waits on.
+  Net effect: VLC reads in order, the end-of-file index piece is available
+  almost immediately (first/last strategy), and playback starts as pieces
+  land instead of dying on a hung seek.
+- **VLC is now the only supported player** (by request): IINA/mpv/ffplay
+  detection and the browser fallback are gone. `config.player` accepts
+  `"vlc"` or a path to the vlc binary; anything else is rejected with a
+  clear error. Missing VLC surfaces `VLC is not installed — torq requires
+  VLC to play streams`.
+
 ## [0.1.10] — 2026-08-13
 
 ### Fixed

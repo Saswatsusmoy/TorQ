@@ -267,6 +267,13 @@ async fn play_file(
 /// HTTP range streaming of a torrent file, works mid-download: librqbit's
 /// `FileStream` reads pieces on demand (32MB lookahead), so a player can start
 /// before the file completes — mpv/VLC over this endpoint are the target.
+/// How long a ranged stream request may wait for the piece at its start
+/// offset before failing with 416. Long enough for a piece that is already
+/// mid-flight to land; short enough that VLC's MKV index seeks (which jump
+/// to the still-un-downloaded end of the file) fail fast instead of hanging
+/// and nuking the whole playback ("cannot seek / damaged file").
+const STREAM_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 async fn stream_file(
     State(state): State<Arc<AppState>>,
     Path((id, file_id)): Path<(String, usize)>,
@@ -281,40 +288,87 @@ async fn stream_file(
         .ok_or_else(|| ApiError::NotFound(format!("file {file_id} not found")))?;
     let total = file.length;
 
+    // Mid-download the pieces are fetched first/last-then-sequential, so the
+    // downloaded region is *not* contiguous: arbitrary seeks can stall on a
+    // missing piece. Until the file completes we don't advertise seekability
+    // (players then read linearly and wait, which is what makes MKV play),
+    // and ranged requests must start on an available piece or fail fast.
+    let stats = api.api_stats_v1(parsed)?;
+    let file_complete =
+        stats.file_progress.get(file_id).copied().unwrap_or(0) >= total;
+
     let mut stream = api.api_stream(parsed, file_id)?;
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .and_then(|r| parse_range(r, total));
-    let (status, start, end) = match range {
-        Some((s, e)) => (StatusCode::PARTIAL_CONTENT, s, e),
-        None => (StatusCode::OK, 0, total.saturating_sub(1)),
-    };
-    if start > 0 {
-        use tokio::io::AsyncSeekExt;
-        stream.seek(std::io::SeekFrom::Start(start)).await?;
-    }
-    let len = end - start + 1;
 
     let mut headers = HeaderMap::new();
-    headers.insert("Accept-Ranges", HeaderValue::from_static("bytes"));
+    if file_complete {
+        headers.insert("Accept-Ranges", HeaderValue::from_static("bytes"));
+    }
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static(mime_for(&file.name)),
     );
-    if status == StatusCode::PARTIAL_CONTENT {
+
+    let Some((start, end)) = range else {
+        let len = total;
         headers.insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).expect("valid header"),
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&len.to_string()).expect("valid header"),
         );
-    }
+        let body = Body::from_stream(ReaderStream::with_capacity(
+            stream.take(len),
+            64 * 1024,
+        ));
+        return Ok((StatusCode::OK, headers, body).into_response());
+    };
+
+    use tokio::io::AsyncSeekExt;
+    stream.seek(std::io::SeekFrom::Start(start)).await?;
+    // Probe: the piece at `start` must be complete, else respond 416 now
+    // instead of leaving the client's seek hanging forever.
+    let mut probe = [0u8; 4096];
+    let n = match tokio::time::timeout(STREAM_PROBE_TIMEOUT, stream.read(&mut probe)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => {
+            let mut resp = Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(
+                    header::CONTENT_RANGE,
+                    format!("bytes */{total}"),
+                )
+                .body(Body::empty())
+                .expect("valid response");
+            resp.headers_mut().insert(
+                "Accept-Ranges",
+                HeaderValue::from_static("bytes"),
+            );
+            return Ok(resp);
+        }
+    };
+
+    let len = end - start + 1;
+    headers.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).expect("valid header"),
+    );
     headers.insert(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&len.to_string()).expect("valid header"),
     );
 
-    let body = Body::from_stream(ReaderStream::with_capacity(stream.take(len), 64 * 1024));
-    Ok((status, headers, body).into_response())
+    // The probed bytes head the body; the rest streams on as pieces land.
+    let head = futures::stream::once(async move {
+        Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(&probe[..n]))
+    });
+    let rest = ReaderStream::with_capacity(
+        stream.take(len.saturating_sub(n as u64)),
+        64 * 1024,
+    );
+    let body = Body::from_stream(head.chain(rest));
+    Ok((StatusCode::PARTIAL_CONTENT, headers, body).into_response())
 }
 
 /// Parse a single-range `bytes=` header; returns (start, end), inclusive.

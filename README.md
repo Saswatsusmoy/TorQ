@@ -61,12 +61,16 @@ the stream is live (Stremio-style, no full download first). On anything
 already queued it just plays. `torq play` / `torq stream` accept a torrent
 id, a magnet, a 40-char infohash, or a path to a `.torrent` file.
 
-`P` and `torq play` open the stream in a **real video player**, never a
-browser: torq auto-detects VLC > IINA > mpv > ffplay (macOS app bundles and
-PATH binaries), falling back to QuickTime on macOS and the system browser
-elsewhere. Set `player` in `~/.config/torq/config.toml` to force one
-(`player = "iina"`, a path, or `"browser"`). For scripted playback,
-`mpv "$(torq stream <id>)"` works without any player installed.
+`P` and `torq play` open the stream in **VLC** — the only supported player
+for now (it is the one whose HTTP-streaming behavior is known-good against
+torq's mid-download ranges). VLC is auto-detected via PATH or the macOS app
+bundle; set `player` in `~/.config/torq/config.toml` to point at a specific
+vlc binary if needed. MKV plays mid-download: torq serves only pieces that
+exist, fails range requests into missing data fast (416), and doesn't
+advertise seeking until the file completes — VLC reads linearly and waits,
+and librqbit fetches first/last pieces first so the MKV index at the end is
+available almost immediately. For scripted playback,
+`vlc "$(torq stream <id>)"` works too.
 
 Already have the repo checked out? `cargo build --release` gives you
 `target/release/torq` directly.

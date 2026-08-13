@@ -1,9 +1,9 @@
-//! Open a torrent stream URL in a real video player.
+//! Open a torrent stream URL in VLC.
 //!
-//! `open`/`xdg-open` would hand an http URL to the default *browser*, which
-//! chokes on mkv/webm. torq prefers an actual video player, in priority
-//! order, falling back to the platform opener only when none is installed.
-//! `config.player` can force a specific player (or `"browser"`).
+//! VLC is the only supported player for now: it is the one player whose
+//! HTTP streaming behavior is known-good against torq's mid-download
+//! ranges. `config.player` can still point at a specific VLC binary (or
+//! `"vlc"`), but non-VLC players are rejected.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,41 +16,23 @@ pub struct Resolved {
     pub argv: Vec<String>,
 }
 
-/// Candidate players, most preferred first. `bins` are looked up on PATH;
-/// `mac_app` is a bundle whose executable lives at
-/// `<app>/Contents/MacOS/<exe>` (macOS only).
+/// The one supported player. `bins` are looked up on PATH; `mac_app` is the
+/// macOS bundle whose executable lives at `<app>/Contents/MacOS/<exe>`.
 struct Candidate {
     name: &'static str,
     bins: &'static [&'static str],
     mac_app: Option<(&'static str, &'static str)>,
 }
 
-const CANDIDATES: &[Candidate] = &[
-    Candidate {
-        name: "VLC",
-        bins: &["vlc"],
-        mac_app: Some(("VLC.app", "VLC")),
-    },
-    Candidate {
-        name: "IINA",
-        bins: &["iina"],
-        mac_app: Some(("IINA.app", "iina")),
-    },
-    Candidate {
-        name: "mpv",
-        bins: &["mpv"],
-        mac_app: Some(("mpv.app", "mpv")),
-    },
-    Candidate {
-        name: "ffplay",
-        bins: &["ffplay"],
-        mac_app: None,
-    },
-];
+const CANDIDATES: &[Candidate] = &[Candidate {
+    name: "VLC",
+    bins: &["vlc"],
+    mac_app: Some(("VLC.app", "VLC")),
+}];
 
 /// Resolve which command plays the URL. Pure (no process spawns, no env
-/// reads beyond what is passed in) so the priority/fallback logic is
-/// unit-testable with fake PATHs and app dirs.
+/// reads beyond what is passed in) so the resolution logic is unit-testable
+/// with fake PATHs and app dirs.
 pub fn resolve(
     override_player: Option<&str>,
     mac: bool,
@@ -58,32 +40,26 @@ pub fn resolve(
     app_dirs: &[PathBuf],
 ) -> Result<Resolved, String> {
     if let Some(over) = override_player {
-        if over.eq_ignore_ascii_case("browser") {
-            return Ok(opener(mac));
-        }
-        // A path is used verbatim; anything else is a player name.
+        // A path is used verbatim (it is expected to be a VLC binary).
         if over.contains('/') {
             return Ok(Resolved {
-                name: "configured player",
+                name: "VLC",
                 argv: vec![over.to_string()],
             });
         }
-        for c in CANDIDATES {
-            if c.name.eq_ignore_ascii_case(over) {
-                return locate(c, mac, path_var, app_dirs)
-                    .ok_or_else(|| format!("player '{over}' is not installed"));
-            }
+        if over.eq_ignore_ascii_case("vlc") {
+            return locate(&CANDIDATES[0], mac, path_var, app_dirs)
+                .ok_or_else(|| "VLC is not installed".to_string());
         }
         return Err(format!(
-            "unknown player '{over}' (try vlc, iina, mpv, ffplay, or browser)"
+            "only VLC is supported for playback (set player = \"vlc\" or a path to the vlc binary); got '{over}'"
         ));
     }
-    for c in CANDIDATES {
-        if let Some(spec) = locate(c, mac, path_var, app_dirs) {
-            return Ok(spec);
-        }
-    }
-    Ok(opener(mac))
+    locate(&CANDIDATES[0], mac, path_var, app_dirs).ok_or_else(|| {
+        "VLC is not installed — torq requires VLC to play streams \
+         (macOS: brew install --cask vlc; Linux: your package manager's vlc)"
+            .to_string()
+    })
 }
 
 fn locate(c: &Candidate, mac: bool, path_var: &str, app_dirs: &[PathBuf]) -> Option<Resolved> {
@@ -136,21 +112,6 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
-/// Last-resort opener: the platform's URL handler (a browser).
-fn opener(mac: bool) -> Resolved {
-    if mac {
-        Resolved {
-            name: "QuickTime Player",
-            argv: vec!["open".into(), "-a".into(), "QuickTime Player".into()],
-        }
-    } else {
-        Resolved {
-            name: "browser",
-            argv: vec!["xdg-open".into()],
-        }
-    }
-}
-
 fn is_mac() -> bool {
     cfg!(target_os = "macos")
 }
@@ -167,18 +128,17 @@ fn app_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Auto-detected default resolution, cached for the process lifetime.
-static DEFAULT: LazyLock<Resolved> = LazyLock::new(|| {
+/// Auto-detected VLC resolution, cached for the process lifetime.
+static DEFAULT: LazyLock<Result<Resolved, String>> = LazyLock::new(|| {
     resolve(None, is_mac(), &path_var(), &app_dirs())
-        .expect("auto-resolution always falls back to the opener")
 });
 
-/// Launch the stream URL in a player. Returns the player's display name on
-/// success. `override_player` (from config) wins when set.
+/// Launch the stream URL in VLC. Returns "VLC" on success.
+/// `override_player` (from config) wins when set.
 pub fn open_in_player(url: &str, override_player: Option<&str>) -> Result<&'static str, String> {
     let spec = match override_player {
         Some(_) => resolve(override_player, is_mac(), &path_var(), &app_dirs())?,
-        None => DEFAULT.clone(),
+        None => DEFAULT.clone()?,
     };
     let mut cmd = Command::new(&spec.argv[0]);
     cmd.args(&spec.argv[1..]);
@@ -219,8 +179,20 @@ mod tests {
         std::env::join_paths([dir]).unwrap().into_string().unwrap()
     }
 
+    fn mac_app_dir(dir: &Path) -> PathBuf {
+        let app = dir.join("VLC.app/Contents/MacOS/VLC");
+        std::fs::create_dir_all(app.parent().unwrap()).unwrap();
+        std::fs::write(&app, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        app
+    }
+
     #[test]
-    fn priority_prefers_vlc_over_mpv() {
+    fn detects_vlc_from_path() {
         let dir = bins_dir(&["vlc", "mpv"]);
         let r = resolve(None, false, &path_for(&dir), &[]).unwrap();
         assert_eq!(r.name, "VLC");
@@ -228,63 +200,38 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_next_available_player() {
-        let dir = bins_dir(&["mpv"]);
-        let r = resolve(None, false, &path_for(&dir), &[]).unwrap();
-        assert_eq!(r.name, "mpv");
-        assert_eq!(r.argv[0], dir.join("mpv").to_string_lossy());
-    }
-
-    #[test]
     fn mac_app_bundle_is_found_when_no_binary() {
         let dir = bins_dir(&[]);
-        let app = dir.join("VLC.app/Contents/MacOS/VLC");
-        std::fs::create_dir_all(app.parent().unwrap()).unwrap();
-        std::fs::write(&app, "#!/bin/sh\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app = mac_app_dir(&dir);
         let r = resolve(None, true, "", std::slice::from_ref(&dir)).unwrap();
         assert_eq!(r.name, "VLC");
         assert_eq!(r.argv[0], app.to_string_lossy());
     }
 
     #[test]
-    fn no_player_falls_back_to_platform_opener() {
-        let dir = bins_dir(&[]);
-        let linux = resolve(None, false, &path_for(&dir), &[]).unwrap();
-        assert_eq!(linux.name, "browser");
-        assert_eq!(linux.argv, vec!["xdg-open".to_string()]);
-        let mac = resolve(None, true, "", &[]).unwrap();
-        assert_eq!(mac.name, "QuickTime Player");
-        assert_eq!(
-            mac.argv,
-            vec!["open".to_string(), "-a".to_string(), "QuickTime Player".to_string()]
-        );
+    fn missing_vlc_errors_with_clear_message() {
+        let dir = bins_dir(&["mpv"]);
+        let err = resolve(None, false, &path_for(&dir), &[]).unwrap_err();
+        assert!(err.contains("VLC is not installed"), "{err}");
+        assert!(err.contains("requires VLC"), "{err}");
     }
 
     #[test]
-    fn override_browser_forces_opener() {
+    fn override_vlc_works_and_others_are_rejected() {
         let dir = bins_dir(&["vlc"]);
-        let r = resolve(Some("browser"), false, &path_for(&dir), &[]).unwrap();
-        assert_eq!(r.argv[0], "xdg-open");
-        let mac = resolve(Some("Browser"), true, "", &[]).unwrap();
-        assert_eq!(mac.name, "QuickTime Player");
-    }
-
-    #[test]
-    fn override_forces_installed_player_and_errors_otherwise() {
-        let dir = bins_dir(&["vlc"]);
+        let r = resolve(Some("vlc"), false, &path_for(&dir), &[]).unwrap();
+        assert_eq!(r.name, "VLC");
+        assert!(resolve(Some("iina"), false, &path_for(&dir), &[]).is_err());
         assert!(resolve(Some("mpv"), false, &path_for(&dir), &[]).is_err());
-        let mpv_dir = bins_dir(&["vlc", "mpv"]);
-        let r = resolve(Some("mpv"), false, &path_for(&mpv_dir), &[]).unwrap();
-        assert_eq!(r.name, "mpv");
-        assert_eq!(r.argv[0], mpv_dir.join("mpv").to_string_lossy());
+        assert!(resolve(Some("browser"), false, &path_for(&dir), &[]).is_err());
+        // A named player that is simply missing also errors.
+        assert!(resolve(Some("vlc"), false, "", &[]).is_err());
     }
 
     #[test]
     fn override_path_is_used_verbatim() {
-        let r = resolve(Some("/opt/fake/player"), false, "", &[]).unwrap();
-        assert_eq!(r.argv, vec!["/opt/fake/player".to_string()]);
+        let r = resolve(Some("/opt/vlc/vlc"), false, "", &[]).unwrap();
+        assert_eq!(r.argv, vec!["/opt/vlc/vlc".to_string()]);
     }
 
     #[test]

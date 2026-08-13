@@ -24,6 +24,6 @@ serde_json.workspace = true
 dirs.workspace = true
 flate2 = "1"
 tar = "0.4"
-torq-core = { path = "../torq-core", version = "0.1.10" }
-torq-sources = { path = "../torq-sources", version = "0.1.10" }
-torq-tui = { path = "../torq-tui", version = "0.1.10" }
+torq-core = { path = "../torq-core", version = "0.1.11" }
+torq-sources = { path = "../torq-sources", version = "0.1.11" }
+torq-tui = { path = "../torq-tui", version = "0.1.11" }
