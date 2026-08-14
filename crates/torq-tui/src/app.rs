@@ -13,6 +13,10 @@ use torq_sources::{Registry, SourceGroup, TorrentResult};
 
 use crate::net::{Action, Client, UiMsg};
 
+/// How long a top-bar notice stays visible before reverting to the daemon
+/// address.
+const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// Sum of per-torrent rates in Mbps→bytes/sec; None when nothing moves.
 fn aggregate_rate(rates: impl Iterator<Item = f32>) -> Option<f32> {
     let mut sum = 0.0f32;
@@ -268,6 +272,8 @@ pub struct App {
     // Shared
     pub help: bool,
     pub notice: Option<String>,
+    /// When the notice was set; expired by `tick()` so toasts don't stick.
+    notice_at: Option<std::time::Instant>,
     /// Frame counter driving the progress-bar sheen and spinner.
     pub tick: u64,
 }
@@ -296,12 +302,27 @@ impl App {
             upload_cap_bps: None,
             help: false,
             notice: None,
+            notice_at: None,
             tick: 0,
         }
     }
 
     pub fn tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
+        self.expire_notice(std::time::Instant::now());
+    }
+
+    /// Notices are transient toasts; drop them after a few seconds so the
+    /// top bar returns to showing the daemon address.
+    fn expire_notice(&mut self, now: std::time::Instant) {
+        if self.notice.is_some()
+            && self
+                .notice_at
+                .is_some_and(|at| now.duration_since(at) >= NOTICE_TTL)
+        {
+            self.notice = None;
+            self.notice_at = None;
+        }
     }
 
     pub fn is_search_section(&self) -> bool {
@@ -430,7 +451,10 @@ impl App {
                 self.download_cap_bps = c.download_bps;
                 self.upload_cap_bps = c.upload_bps;
             }
-            UiMsg::Notice(s) => self.notice = Some(s),
+            UiMsg::Notice(s) => {
+                self.notice = Some(s);
+                self.notice_at = Some(std::time::Instant::now());
+            }
         }
     }
 
@@ -438,6 +462,7 @@ impl App {
         self.query = self.edit.clone();
         self.searching = true;
         self.notice = None;
+        self.notice_at = None;
         self.mode = SearchMode::List;
         self.cursor = 0;
         self.detail = None;
@@ -793,6 +818,20 @@ mod tests {
     fn client() -> (Client, mpsc::UnboundedReceiver<Action>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Client::for_test(tx), rx)
+    }
+
+    #[test]
+    fn notices_expire_after_ttl() {
+        let mut app = App::new("http://test".into());
+        let t0 = std::time::Instant::now();
+        app.apply(UiMsg::Notice("playing in VLC".into()));
+        assert_eq!(app.notice.as_deref(), Some("playing in VLC"));
+        // Still visible at exactly the TTL boundary…
+        app.expire_notice(t0 + NOTICE_TTL);
+        assert!(app.notice.is_some());
+        // …and gone a moment later, so the top bar returns to the daemon addr.
+        app.expire_notice(t0 + NOTICE_TTL + std::time::Duration::from_secs(1));
+        assert_eq!(app.notice, None);
     }
 
     #[test]

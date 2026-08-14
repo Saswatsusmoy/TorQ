@@ -150,10 +150,30 @@ async fn client_loop(
                     }
                     refresh(&http, &base, &auth, &msgs).await;
                 }
-                Action::Play { id } => play_torrent(&http, &base, &auth, &msgs, id, player.clone()).await,
+                // Play paths can take a while (metadata resolution polls up
+                // to 120s): they run detached so the loop keeps refreshing
+                // torrents and answering keys — otherwise the whole TUI
+                // froze for the duration of the stream open.
+                Action::Play { id } => {
+                    let (http, base, auth, msgs, player) =
+                        (http.clone(), base.clone(), auth.clone(), msgs.clone(), player.clone());
+                    tokio::spawn(async move {
+                        play_torrent(&http, &base, &auth, &msgs, id, player).await;
+                    });
+                }
                 Action::AddAndPlay { magnet } => {
-                    add_and_play(&http, &base, &token, &msgs, &player, &magnet).await;
-                    refresh(&http, &base, &auth, &msgs).await;
+                    let (http, base, token, auth, msgs, player) = (
+                        http.clone(),
+                        base.clone(),
+                        token.clone(),
+                        auth.clone(),
+                        msgs.clone(),
+                        player.clone(),
+                    );
+                    tokio::spawn(async move {
+                        add_and_play(&http, &base, &token, &msgs, &player, &magnet).await;
+                        refresh(&http, &base, &auth, &msgs).await;
+                    });
                 }
                 Action::Refresh => refresh(&http, &base, &auth, &msgs).await,
             },

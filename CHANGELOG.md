@@ -3,6 +3,29 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.13] — 2026-08-14
+
+### Fixed
+
+- **The TUI no longer freezes when a stream opens.** Play and add-and-play
+  ran inside the client loop's `tokio::select!`, so the up-to-120s metadata
+  wait blocked torrent refreshes and SSE handling — the list and strip went
+  stale until the player launched. Both flows now run as detached tasks; the
+  UI keeps updating during the whole open, including closing and re-opening
+  a stream.
+- **Top-bar notices expire.** "▶ playing in VLC" / "resolving metadata…"
+  stayed in the top bar forever (until the next search); they now disappear
+  after 8s and the bar returns to showing the daemon address.
+
+### Verified (live user-simulation)
+
+Drove the real TUI end to end: search (127 results) → download (queued →
+auto-promoted → completed) → `P` stream (player spawned with token URL,
+strip stayed live at 9-15 MB/s) → notice appeared and expired → pause →
+resume → close player → `P` again (fresh token) → sort → help → sections →
+progress column (`seed`) → inspector status transitions → remove → clean
+quit.
+
 ## [0.1.12] — 2026-08-13
 
 ### Added
