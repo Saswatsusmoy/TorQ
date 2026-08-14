@@ -191,6 +191,18 @@ fn draw_strip(f: &mut Frame, area: Rect, cols: u16, app: &App) {
                 Style::new().fg(theme::GOOD).add_modifier(Modifier::DIM),
             ));
         }
+        // Show active rate caps so a throttled session isn't a mystery.
+        for (icon, cap) in [(icon::DOWN, app.download_cap_bps), (icon::UP, app.upload_cap_bps)] {
+            if cap.is_some_and(|bps| bps > 0) {
+                let bps = cap.expect("checked");
+                spans.push(Span::styled("  ·  ", dim));
+                spans.push(Span::styled(icon, alt));
+                spans.push(Span::styled(
+                    format!(" capped {}", human_speed(Some(bps as f32))),
+                    Style::new().fg(theme::WARN).add_modifier(Modifier::DIM),
+                ));
+            }
+        }
     }
     let line = truncate_spans(spans, w);
     f.render_widget(
@@ -2015,6 +2027,26 @@ mod render_tests {
         assert_eq!(row(&buf, 3, 1, 38), " ".repeat(38));
         assert!(row(&buf, 11, 1, 39).starts_with("↑↓←→ Move"));
     }
+    #[test]
+    fn strip_shows_active_rate_caps() {
+        let mut app = App::new("http://127.0.0.1:8765".into());
+        app.view = View::Browser;
+        app.section = Section::Downloads;
+        app.region = Region::Content;
+        app.torrents = vec![view(1, Status::Downloading, 0.5, Some(1.0), None)];
+        app.download_cap_bps = Some(204_800);
+        let buf = frame(&mut app, 80, 24);
+        let strip = row(&buf, 22, 1, 78);
+        assert!(
+            strip.contains("capped 200"),
+            "strip should surface the download cap: {strip}"
+        );
+        // Without caps the segment is absent.
+        app.download_cap_bps = None;
+        let buf = frame(&mut app, 80, 24);
+        assert!(!row(&buf, 22, 1, 78).contains("capped"));
+    }
+
     #[test]
     fn wide_layout_splits_list_inspector_and_strip() {
         let mut app = App::new("http://127.0.0.1:8765".into());

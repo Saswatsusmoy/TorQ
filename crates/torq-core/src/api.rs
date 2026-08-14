@@ -160,11 +160,18 @@ async fn list_torrents(State(state): State<Arc<AppState>>) -> Json<Vec<TorrentVi
 struct ConfigInfo {
     /// Concurrent transfer slots; torrents beyond this wait in queue.
     max_active: usize,
+    /// Active flat rate caps in bytes/sec (None = unlimited). The schedule
+    /// can override these at runtime, so this is best-effort for display.
+    upload_bps: Option<u32>,
+    download_bps: Option<u32>,
 }
 
 async fn get_config(State(state): State<Arc<AppState>>) -> Json<ConfigInfo> {
+    let cfg = crate::config::Config::load().unwrap_or_default();
     Json(ConfigInfo {
         max_active: state.daemon.max_active(),
+        upload_bps: cfg.upload_bps,
+        download_bps: cfg.download_bps,
     })
 }
 

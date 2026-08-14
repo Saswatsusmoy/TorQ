@@ -18,5 +18,5 @@ crossterm = "0.28"
 unicode-width = "0.2"
 futures.workspace = true
 bytes = "1"
-torq-core = { path = "../torq-core", version = "0.1.11" }
-torq-sources = { path = "../torq-sources", version = "0.1.11" }
+torq-core = { path = "../torq-core", version = "0.1.12" }
+torq-sources = { path = "../torq-sources", version = "0.1.12" }

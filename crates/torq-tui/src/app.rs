@@ -262,6 +262,9 @@ pub struct App {
     pub wide: bool,
     /// Concurrent transfer slots (queue cap), refreshed from the daemon.
     pub max_active: usize,
+    /// Flat rate caps from config (None = unlimited), for the activity strip.
+    pub download_cap_bps: Option<u32>,
+    pub upload_cap_bps: Option<u32>,
     // Shared
     pub help: bool,
     pub notice: Option<String>,
@@ -289,6 +292,8 @@ impl App {
             dl_cursor: 0,
             wide: false,
             max_active: torq_core::daemon::DEFAULT_MAX_ACTIVE,
+            download_cap_bps: None,
+            upload_cap_bps: None,
             help: false,
             notice: None,
             tick: 0,
@@ -420,7 +425,11 @@ impl App {
                 self.notice = Some(e.to_string());
                 self.searching = false;
             }
-            UiMsg::Config(c) => self.max_active = c.max_active,
+            UiMsg::Config(c) => {
+                self.max_active = c.max_active;
+                self.download_cap_bps = c.download_bps;
+                self.upload_cap_bps = c.upload_bps;
+            }
             UiMsg::Notice(s) => self.notice = Some(s),
         }
     }

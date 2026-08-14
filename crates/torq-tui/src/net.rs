@@ -46,6 +46,10 @@ pub enum UiMsg {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ConfigInfo {
     pub max_active: usize,
+    #[serde(default)]
+    pub upload_bps: Option<u32>,
+    #[serde(default)]
+    pub download_bps: Option<u32>,
 }
 
 pub struct Client {

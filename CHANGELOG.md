@@ -3,6 +3,16 @@
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/) and
 semantic versioning.
 
+## [0.1.12] — 2026-08-13
+
+### Added
+
+- **The activity strip surfaces active rate caps** — `↓ capped 200 KB/s`.
+  A leftover `download_bps` limit in config silently throttled downloads to
+  200 KB/s while Transmission ran unlimited; the strip now makes a capped
+  session visible instead of looking like a slow engine. `GET /config`
+  reports the flat limits (`upload_bps`/`download_bps`) that drive it.
+
 ## [0.1.11] — 2026-08-13
 
 ### Fixed
